@@ -1,0 +1,70 @@
+- Start with disc and discreet points along a 1D line.
+    - Input is going to be a Velocity Vector (tangential and Radial)
+    - Output is going to have a desired pressure
+    - Class for Node
+        - Initial Node is outside
+        - Initial velocity of first node is fixed
+        - Exit pressure of last node is fixed
+        - Navier Stokes equation -> Pousiele Flow Equation (These are the equations based on the nodes)
+            - Start with steady state, non compressible fluid
+    - Class for Mesh (Combo of Nodes)
+        - Should establish even spacing of nodes
+        - Treat as a global array
+    - Class for Solver (Pass it the nodes)
+        - Define Input and Output radius
+            - 6in outer radius
+            - 2in radius
+        - Velocity
+        - Kinetic Energy of disc
+            - End goal is Toque
+- Going to need a linear system solved (Implicit and Explicit, Idk which one to use)
+    - Try to use solve IVP, if that doesn’t work go implicit, if that doesn’t work
+
+-NEXT STEPS 9/8/2025
+    01. Driver: argparse + CSV export (no physics changes).
+ADDED    02. Solver: add outer loop with residuals and under-relaxation; still inviscid L.
+ADDED    03. θ-momentum viscous decay: implement 2a, iterate to convergence.
+ADDED    04. Radial viscous loss in dp/dr: add 2b and re-tune relaxation.
+    05. Diagnostics: dimensionless numbers + plots.
+    06. Boundary modes: mass-flow BC and pressure-at-outer option.
+    07. Tests + grid-independence harness.
+
+
+Notes for Meeting 9/9
+    NOT USEFULL IF I DON"T KNOW HOW IT WORKS
+
+    When change to compressible
+        -mmdot will remain the same
+        -vdot will increase
+
+    TimeStamp loop
+        Convergence loop   
+            r Spatial loop
+                Solve Individual node
+            is convergence true?
+
+    largely solving for vtheta and Vr
+    Llinear Solver to start not, parabolic
+
+    Disk Property Class
+    Outlet Pressure 0 as a gauge pressure
+    5/ms initial velocity
+    dumb it down -> Nodes, Build Mesh, Solve
+    simple cfd algorithm steady state GOOGLE IMAGE First three STEPS
+    Plot each V at Node
+    When disk stops slowing down, stop the sim
+    increase convergence to 1000? Or time delay
+    whatch a simple CFD alg video
+    
+CURRENT STANCE:
+ - using solve_ivp and rhs to solve navier stokes and Jacobi sweeps to check for convergence
+ - Pressure is DERIVED, not coupled with velocity for now. I think thats the next step 
+ - The equation for pressure is dp/dr = rho*(vt^2/r) - rho*vr*(dvr/dr)
+        - centrifugal force - radial acceleration (decelerating as moves inward)
+
+
+10/8/2025
+- convergence will be checked OUTSIDE of node 
+- BC will be set for the outermost node, Node[0]
+- I want solver to spiral inwards for my own sanity for some reason idk 
+- rediscuss inverse matrix solution (take notes) and explicit sovler 

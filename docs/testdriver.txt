@@ -1,0 +1,64 @@
+"""
+Driver: build disk + mesh, set simple case, run solver, print tables.
+Notes you asked to honor:
+ - Nodes → Build Mesh → Solve
+ - Plot each V at node (print tabular here; you can add matplotlib plot quickly)
+ - Outlet gauge pressure = 0 (not used yet; mass flow prescribed)
+ - Initial velocity ~ 5 m/s (used as vtheta initial guess at r_out)
+ - Stop when disk stops slowing down (event on dω/dt) or steady dvθ/dt
+ - "Linear to start, not parabolic": this core is diffusion-dominated and linear in vθ
+"""
+from disk import DiskProperties
+from mesh import Mesh
+from solver import SteadyCFDSolver
+
+
+def main():
+    # --- Case setup ---
+    # Geometry
+    r_in  = 0.06     # m
+    r_out = 0.0075     # m
+    h     = 0.0005   # m   (0.5 mm film)
+    n     = 3       # nodes
+
+    # Fluid
+    rho = 997.0      # kg/m^3
+    mu  = 0.001      # Pa·s
+
+    # Disk inertia
+    mass_disk = .02 #kg
+    I = 0.5 * mass_disk * r_out**2
+
+    disk = DiskProperties(r_in=r_in, r_out=r_out, film_thickness=h, rho=rho, mu=mu, I=I)
+
+    # Mesh
+    mesh = Mesh(r_in=r_in, r_out=r_out, n_nodes=n)
+
+    # Operating conditions
+    vtheta_init = 5.0     # m/s initial tangential guess at all nodes
+    omega_init  = 0  # simple consistent spin [rad/s]
+    m_dot       = 0.02    # kg/s total mass flow (sets vr(r) by continuity)
+
+    # Solver and tolerances
+    solver = SteadyCFDSolver(disk_props=disk, mesh=mesh, m_dot=m_dot,
+                             vtheta_init=vtheta_init, omega_init=omega_init,
+                             t_max=10.0, tol_v=1e-5, tol_om=1e-7)
+
+    result = solver.solve()
+
+    # Output
+    rs = mesh.rs
+    vtheta = result["vtheta"]
+    vr = mesh.get_vr()
+    omega = result["omega"]
+
+    print("\n=== Solve Summary ===")
+    print(f"success: {result['success']}, message: {result['message']}")
+    print(f"t_end: {result['t_end']:.6f} s, omega_final: {omega:.6f} rad/s")
+    print("\nNode table (r, v_r, v_theta):")
+    print("i\t r [m]\t\t v_r [m/s]\t v_theta [m/s]")
+    for i,(ri, vri, vti) in enumerate(zip(rs, vr, vtheta)):
+        print(f"{i:02d}\t {ri: .5f}\t {vri: .6f}\t {vti: .6f}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,30 @@
+import numpy as np
+from node import Node
+
+class Mesh:
+    def __init__(self, r_in: float, r_out: float, n_nodes: int):
+        assert n_nodes >= 3
+        self.r_in = r_in
+        self.r_out = r_out
+        self.n = n_nodes
+        self.rs = np.linspace(r_out, r_in, n_nodes)  # outer to inner
+        self.nodes = [Node(r) for r in self.rs]
+
+    @property
+    def dr(self) -> float: #Spacing between nodes
+        return abs(self.rs[1] - self.rs[0])
+
+    def set_vtheta(self, vtheta_profile):
+        for nd, v in zip(self.nodes, vtheta_profile):
+            nd.vtheta = float(v)
+
+    def get_vtheta(self):
+        return np.array([nd.vtheta for nd in self.nodes], dtype=float)
+
+    def set_vr(self, vr_profile):
+        for nd, v in zip(self.nodes, vr_profile):
+            nd.vr = float(v)
+
+    def get_vr(self):
+        return np.array([nd.vr for nd in self.nodes], dtype=float)
+

@@ -1,0 +1,10 @@
+from dataclasses import dataclass
+
+@dataclass
+class DiskProperties:
+    r_in: float           # m, inner radius
+    r_out: float          # m, outer radius
+    film_thickness: float # m,
+    rho: float            # kg/m^3 density
+    mu: float             # Pa·s fluid dynamic viscosity
+    I: float              # kg·m^2, intertia
