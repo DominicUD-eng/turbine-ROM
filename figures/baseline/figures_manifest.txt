@@ -1,4 +1,0 @@
-Run: baseline
-latest_profiles: C:\Users\luke2\OneDrive\DaTA Lab Stuff\NodeCode\figures\baseline\latest_profiles.png
-history_vt: C:\Users\luke2\OneDrive\DaTA Lab Stuff\NodeCode\figures\baseline\history_vt.png
-history_vr: C:\Users\luke2\OneDrive\DaTA Lab Stuff\NodeCode\figures\baseline\history_vr.png
