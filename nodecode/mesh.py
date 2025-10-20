@@ -69,16 +69,16 @@ class Mesh:
         inner_nodes = [Node(radius=float(r)) for r in rs_inner[::-1]]
         for nd in inner_nodes: nd.region = "INNER"
 
-        # Combined list: index 0 is OUTERMOST
+        # Combined list: index 0 is Innnermost
         self.nodes: list[Node] = [*inner_nodes, *main_nodes, *outer_nodes]
 
         if not self.nodes:
             raise ValueError("Mesh has zero interior nodes across all regions.")
 
         # Boundary conditions
-        self.nodes[len(self.nodes)-1].u_r     = float(v_r_out)
+        self.nodes[len(self.nodes)-1].u_r = float(v_r_out)
         self.nodes[len(self.nodes)-1].u_theta = float(v_t_out)
-        self.nodes[0].p      = float(p0)
+        self.nodes[0].p = float(p0)
 
         # Link previous (outer→inner)
         for i in range(1, len(self.nodes)):
@@ -91,6 +91,20 @@ class Mesh:
         # Optionally keep convenience arrays
         self.rs   = np.array([nd.r for nd in self.nodes], dtype=float)
         self.tags = [nd.region for nd in self.nodes]
+
+    # --- ADD to your Mesh class (non-breaking helper) ---
+    def link_radial_neighbors(self) -> None:
+        """Assumes nodes are uniformly spaced in r and sorted ascending by radius (inner -> outer)."""
+        if not hasattr(self, "nodes"): 
+            raise AttributeError("Mesh has no 'nodes' list.")
+        # Sort defensively by radius (stable if already sorted)
+        self.nodes.sort(key=lambda nd: nd.r)
+        for i, nd in enumerate(self.nodes):
+            nd.set_neighbors(
+                inner=self.nodes[i-1] if i > 0 else None,
+                outer=self.nodes[i+1] if i < len(self.nodes)-1 else None
+            )
+
 
 '''
 Step 1) Build Mesh -> Create Node for each radius
