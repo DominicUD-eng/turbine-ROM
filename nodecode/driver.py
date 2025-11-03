@@ -133,7 +133,7 @@ class SorCase:
                         rho=self.rho, nu=self.nu,
                         omega_r=self.omega_r, omega_t=self.omega_t, omega_p=self.omega_p,
                         tol=self.tol, max_iter=self.max_iter,
-                        pseudo_dt=getattr(self, "pseudo_dt", 1e-3))
+                        pseudo_dt=getattr(self, "pseudo_dt", None))
 
         # use override if provided
         init_fields = init_fields if init_fields is not None else self._initial_fields()

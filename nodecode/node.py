@@ -115,10 +115,12 @@ class Node:
         uE_prev = 0.0 if E._u_r_prev        is None else float(E._u_r_prev)
         tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
 
+        metric_rhs_ur = nu * (uP_prev) * rinv2 
+
         # LHS: diffusion (with -nu/r^2 inside) + implicit mass (rho/dt)
         aW_diff = nu * (betaW + rinv * alphaW)
         aE_diff = nu * (betaE + rinv * alphaE)
-        aP_diff = nu * (betaP + rinv * alphaP - rinv2)
+        aP_diff = nu * (betaP + rinv * alphaP)
 
         aW = aW_diff
         aE = aE_diff
@@ -128,7 +130,7 @@ class Node:
         dp_dr_i   = alphaW * pW + alphaP * pP + alphaE * pE
         dudr_prev = alphaW * uW_prev + alphaP * uP_prev + alphaE * uE_prev
         conv_RHS  = rho * (uP_prev * dudr_prev)
-        b = - dp_dr_i + rho * (tP_prev * tP_prev) * rinv - conv_RHS + mass_coeff * uP_prev
+        b = - dp_dr_i + rho * (tP_prev * tP_prev) * rinv - conv_RHS + mass_coeff * uP_prev + metric_rhs_ur
 
         # Final row
         if not np.all(np.isfinite([aW, aE, aP, b])):
@@ -163,10 +165,12 @@ class Node:
         tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
         tE_prev = 0.0 if E._u_theta_prev    is None else float(E._u_theta_prev)
 
+        metric_rhs_theta = nu * (tP_prev) * rinv2 
+
         # LHS: diffusion (with -nu/r^2 inside) + implicit mass
         aW_diff = nu * (betaW + rinv * alphaW)
         aE_diff = nu * (betaE + rinv * alphaE)
-        aP_diff = nu * (betaP + rinv * alphaP - rinv2)
+        aP_diff = nu * (betaP + rinv * alphaP)
 
         aW = aW_diff
         aE = aE_diff
@@ -175,7 +179,7 @@ class Node:
         # RHS: explicit convection + explicit metric + implicit mass RHS
         dt_dr_prev  = alphaW * tW_prev + alphaP * tP_prev + alphaE * tE_prev
         conv_metric = rho * (ur_prev * dt_dr_prev + (ur_prev * tP_prev) * rinv)
-        b = - conv_metric + mass_coeff * tP_prev
+        b = - conv_metric + mass_coeff * tP_prev + metric_rhs_theta
 
         if not np.all(np.isfinite([aW, aE, aP, b])):
             _nan_debug_dump("u_theta coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b))
@@ -211,9 +215,9 @@ class Node:
         aP = aW + aE
 
         # divergence of r*u_r (explicit in u_r)
-        uW = 0.0 if W._u_r is None else float(W._u_r)
-        uP = 0.0 if self._u_r is None else float(self._u_r)
-        uE = 0.0 if E._u_r is None else float(E._u_r)
+        uW = 0.0 if W._u_r_prev is None else float(W._u_r_prev)
+        uP = 0.0 if self._u_r_prev is None else float(self._u_r_prev)
+        uE = 0.0 if E._u_r_prev is None else float(E._u_r_prev)
         qW, qP, qE = (float(W._r)*uW), (r*uP), (float(E._r)*uE)
 
         d_q_dr_i = alphaW*qW + alphaP*qP + alphaE*qE
@@ -279,6 +283,7 @@ class Node:
         if not np.isfinite(num):
             return
         u_new = num / cr.aP
+    
         if np.isfinite(u_new):
             if self._u_r is None:
                 self._u_r = 0.0
