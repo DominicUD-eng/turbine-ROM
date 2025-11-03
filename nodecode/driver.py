@@ -54,17 +54,17 @@ class SorCase:
                 r_inner: float = 0.05,
                 r_main: float = 0.10,
                 r_outer: float = 0.125,
-                n_inner: int = 1,
-                n_main: int = 5,
-                n_outer: int = 1,
+                n_inner: int = 3,
+                n_main: int = 10,
+                n_outer: int = 3,
                 rho: float = 1000.0,
                 nu: float = 1.0e-6,
                 p0: float = 101325.0,
                 u_r_out: float = 0.0,
                 u_t_out: float = 1.0,
-                omega_r: float = 1.3,
-                omega_t: float = 1.3,
-                omega_p: float = 1.7,
+                omega_r: float = 1.0,
+                omega_t: float = 1.0,
+                omega_p: float = 1.3,
                 tol: float = 1e-8,
                 max_iter: int = 10_000):
         
@@ -86,6 +86,15 @@ class SorCase:
         self.max_iter = int(max_iter)
 
         self.mesh: Mesh | None = None
+
+    def _initial_fields_solid_body(self, Omega: float) -> Dict[str, List[float]]:
+        assert self.mesh is not None
+        rs = np.array([nd.r for nd in self.mesh.nodes], dtype=float)
+        r_in = float(rs.min())
+        u_r0 = np.zeros_like(rs)
+        u_t0 = Omega * rs
+        p0   = self.p0 + 0.5 * self.rho * (Omega**2) * (rs*rs - r_in*r_in)
+        return {"u_r": u_r0.tolist(), "u_theta": u_t0.tolist(), "p": p0.tolist()}
 
     def build_mesh(self) -> None:
         """Use your Mesh builder to create nodes and set BC values on the boundary nodes."""
@@ -115,17 +124,19 @@ class SorCase:
         inner_bc = {"p":   self.p0}
         return outer_bc, inner_bc
 
-    def run(self) -> Dict[str, Any]:
+    def run(self, init_fields: Dict[str, List[float]] | None = None) -> Dict[str, Any]:
         if self.mesh is None:
             self.build_mesh()
-        # Fail early if Node API is incomplete
         require_node_api(self.mesh)
 
         solver = SORSolver(mesh=self.mesh,
-                            rho=self.rho, nu=self.nu,
-                            omega_r=self.omega_r, omega_t=self.omega_t, omega_p=self.omega_p,
-                            tol=self.tol, max_iter=self.max_iter)
-        init_fields = self._initial_fields()
+                        rho=self.rho, nu=self.nu,
+                        omega_r=self.omega_r, omega_t=self.omega_t, omega_p=self.omega_p,
+                        tol=self.tol, max_iter=self.max_iter,
+                        pseudo_dt=getattr(self, "pseudo_dt", 1e-3))
+
+        # use override if provided
+        init_fields = init_fields if init_fields is not None else self._initial_fields()
         outer_bc, inner_bc = self._bcs()
         return solver.solve(init_fields=init_fields, outer_bc=outer_bc, inner_bc=inner_bc)
     
@@ -149,7 +160,8 @@ class SorCase:
 
         # Build mesh and solve
         self.build_mesh()
-        result = self.run()
+        init_fields = self._initial_fields_solid_body(Omega)
+        result = self.run(init_fields=init_fields)
 
         # Pull fields in inner->outer order
         rs = [nd.r for nd in self.mesh.nodes]

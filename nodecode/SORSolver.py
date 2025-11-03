@@ -12,7 +12,9 @@ class SORSolver:
     """
     def __init__(self, mesh, rho: float, nu: float,
                 omega_r: float, omega_t: float, omega_p: float,
-                tol: float, max_iter: int) -> None:
+                tol: float, max_iter: int,
+                pseudo_dt: float | None = 1e-6):
+        
         self.mesh = mesh
         self.rho = float(rho)
         self.nu = float(nu)
@@ -22,6 +24,7 @@ class SORSolver:
         self.tol = float(tol)
         self.max_iter = int(max_iter)
         self.history: List[Dict[str, float]] = []
+        self.pseudo_dt = pseudo_dt
 
 
     # --- public API ---
@@ -54,9 +57,10 @@ class SORSolver:
                 nd.snapshot_prev()
 
             # Assemble coefficients at current iterate
+            mass_coeff = 0.0 if (self.pseudo_dt is None or self.pseudo_dt <= 0.0) else (self.rho / self.pseudo_dt)
             for nd in self.mesh.nodes:
-                nd.assemble_coeffs_u_r(self.rho, self.nu)
-                nd.assemble_coeffs_u_theta(self.rho, self.nu)
+                nd.assemble_coeffs_u_r(self.rho, self.nu, mass_coeff=mass_coeff)
+                nd.assemble_coeffs_u_theta(self.rho, self.nu, mass_coeff=mass_coeff)
                 nd.assemble_coeffs_p(self.rho)
 
             # Enforce BCs before sweep
@@ -143,7 +147,7 @@ class SORSolver:
             if nd.is_inner_bc:
                 # Inner Dirichlet for pressure
                 nd.coeffs_p = EqCoeffs(1.0, 0.0, 0.0, nd._p if nd._p is not None else 0.0)
-                
+
     def _debug_validate_coeffs(self, stage: str) -> None:
         """Print-only validation; NO forcing or raising."""
         for nd in self.mesh.nodes:

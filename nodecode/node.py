@@ -82,137 +82,105 @@ class Node:
         return du_r, du_t, dp
 
     # --- coefficient assembly (second-order, non-uniform central in r) ---
-    def assemble_coeffs_u_r(self, rho: float, nu: float) -> None:
+    def assemble_coeffs_u_r(self, rho: float, nu: float, mass_coeff: float = 0.0) -> None:
         W, E = self.inner, self.outer
         if W is None or E is None:
             self.coeffs_r = EqCoeffs(1.0, 0.0, 0.0, 0.0)
             return
 
         r  = float(self._r)
-        dW = self._drW()
-        dE = self._drE()
-        eps = 1e-12
-
+        dW = self._drW(); dE = self._drE(); eps = 1e-12
         if (not np.isfinite(dW)) or (not np.isfinite(dE)) or (dW <= eps) or (dE <= eps) or ((dW + dE) <= eps):
             _nan_debug_dump("u_r bad spacing", r, dW, dE, {})
-            # Produce NaN row to signal invalid geometry; SOR will skip this row.
             self.coeffs_r = EqCoeffs(np.nan, np.nan, np.nan, np.nan)
             return
-        
-        rinv  = 1.0 / (r if r > eps else eps)
-        rinv2 = rinv * rinv
 
-        # operators
+        rinv  = 1.0 / (r if r > eps else eps); rinv2 = rinv * rinv
+
+        # Non-uniform central operators
         alphaW = - dE / (dW * (dW + dE))
         alphaE =   dW / (dE * (dW + dE))
         alphaP = (dE - dW) / (dW * dE)
+        betaW  =  2.0 / ((dE + dW) * dW)
+        betaE  =  2.0 / ((dE + dW) * dE)
+        betaP  = - (betaW + betaE)
 
-        betaW =  2.0 / ((dE + dW) * dW)
-        betaE =  2.0 / ((dE + dW) * dE)
-        betaP = - (betaW + betaE)
-
-        # debug operators
-        
-        if not np.all(np.isfinite([alphaW, alphaP, alphaE, betaW, betaP, betaE])):
-            _nan_debug_dump("u_r operators non-finite", r, dW, dE, dict(alphaW=alphaW, alphaP=alphaP, alphaE=alphaE,
-                                 betaW=betaW, betaP=betaP, betaE=betaE))
-
-        # current iterate values
-        uW = 0.0 if W._u_r is None else float(W._u_r)
-        uP = 0.0 if self._u_r is None else float(self._u_r)
-        uE = 0.0 if E._u_r is None else float(E._u_r)
-        tP = 0.0 if self._u_theta is None else float(self._u_theta)
-        pW = 0.0 if W._p is None else float(W._p)
+        # Fields (pressure current; velocities use previous iterate for explicit parts)
+        pW = 0.0 if W._p    is None else float(W._p)
         pP = 0.0 if self._p is None else float(self._p)
-        pE = 0.0 if E._p is None else float(E._p)
+        pE = 0.0 if E._p    is None else float(E._p)
 
-        # diffusion + metric
+        uW_prev = 0.0 if W._u_r_prev        is None else float(W._u_r_prev)
+        uP_prev = 0.0 if self._u_r_prev     is None else float(self._u_r_prev)
+        uE_prev = 0.0 if E._u_r_prev        is None else float(E._u_r_prev)
+        tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
+
+        # LHS: diffusion (with -nu/r^2 inside) + implicit mass (rho/dt)
         aW_diff = nu * (betaW + rinv * alphaW)
         aE_diff = nu * (betaE + rinv * alphaE)
-        aP_diff = nu * (betaP + rinv * alphaP)
+        aP_diff = nu * (betaP + rinv * alphaP - rinv2)
 
-        # convection (linearized)
-        aW_conv =  rho * uP * alphaW
-        aE_conv =  rho * uP * alphaE
-        aP_conv =  rho * uP * alphaP
+        aW = aW_diff
+        aE = aE_diff
+        aP = (-(aW + aE)) + aP_diff + mass_coeff  # <-- +rho/dt strengthens diagonal
 
-        # totals
-        aW = aW_diff + aW_conv
-        aE = aE_diff + aE_conv
-        aP = (-(aW + aE)) + (aP_diff + aP_conv) - (nu*rinv2)
+        # RHS: pressure gradient + centrifugal - explicit convection + implicit mass RHS
+        dp_dr_i   = alphaW * pW + alphaP * pP + alphaE * pE
+        dudr_prev = alphaW * uW_prev + alphaP * uP_prev + alphaE * uE_prev
+        conv_RHS  = rho * (uP_prev * dudr_prev)
+        b = - dp_dr_i + rho * (tP_prev * tP_prev) * rinv - conv_RHS + mass_coeff * uP_prev
 
-        # RHS
-        dp_dr_i = alphaW * pW + alphaP * pP + alphaE * pE
-        b = - dp_dr_i + rho * (tP * tP) * rinv
-        
-        # Observe-only debug
+        # Final row
         if not np.all(np.isfinite([aW, aE, aP, b])):
-            _nan_debug_dump("u_r coeffs non-finite", r, dW, dE,
-                            dict(aW=aW, aE=aE, aP=aP, b=b,
-                                 aW_diff=aW_diff, aE_diff=aE_diff, aP_diff=aP_diff,
-                                 aW_conv=aW_conv, aE_conv=aE_conv, aP_conv=aP_conv,
-                                 dp_dr_i=dp_dr_i, tP=tP))
-
+            _nan_debug_dump("u_r coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b))
         self.coeffs_r = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b))
 
-    def assemble_coeffs_u_theta(self, rho: float, nu: float) -> None:
+
+    def assemble_coeffs_u_theta(self, rho: float, nu: float, mass_coeff: float = 0.0) -> None:
         W, E = self.inner, self.outer
         if W is None or E is None:
             self.coeffs_t = EqCoeffs(1.0, 0.0, 0.0, 0.0)
             return
 
         r  = float(self._r)
-        dW = self._drW()
-        dE = self._drE()
-        eps = 1e-12
-
+        dW = self._drW(); dE = self._drE(); eps = 1e-12
         if (not np.isfinite(dW)) or (not np.isfinite(dE)) or (dW <= eps) or (dE <= eps) or ((dW + dE) <= eps):
             _nan_debug_dump("u_theta bad spacing", r, dW, dE, {})
             self.coeffs_t = EqCoeffs(np.nan, np.nan, np.nan, np.nan)
             return
-        
-        rinv  = 1.0 / (r if r > eps else eps)
-        rinv2 = rinv * rinv
+
+        rinv  = 1.0 / (r if r > eps else eps); rinv2 = rinv * rinv
 
         alphaW = - dE / (dW * (dW + dE))
         alphaE =   dW / (dE * (dW + dE))
         alphaP = (dE - dW) / (dW * dE)
+        betaW  =  2.0 / ((dE + dW) * dW)
+        betaE  =  2.0 / ((dE + dW) * dE)
+        betaP  = - (betaW + betaE)
 
-        betaW =  2.0 / ((dE + dW) * dW)
-        betaE =  2.0 / ((dE + dW) * dE)
-        betaP = - (betaW + betaE)
+        ur_prev = 0.0 if self._u_r_prev     is None else float(self._u_r_prev)
+        tW_prev = 0.0 if W._u_theta_prev    is None else float(W._u_theta_prev)
+        tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
+        tE_prev = 0.0 if E._u_theta_prev    is None else float(E._u_theta_prev)
 
-        if not np.all(np.isfinite([alphaW, alphaP, alphaE, betaW, betaP, betaE])):
-            _nan_debug_dump("u_theta operators non-finite", r, dW, dE,
-                            dict(alphaW=alphaW, alphaP=alphaP, alphaE=alphaE,
-                                 betaW=betaW, betaP=betaP, betaE=betaE))
-
-        ur = 0.0 if self._u_r     is None else float(self._u_r)
-        tW = 0.0 if W._u_theta    is None else float(W._u_theta)
-        tP = 0.0 if self._u_theta is None else float(self._u_theta)
-        tE = 0.0 if E._u_theta    is None else float(E._u_theta)
-
+        # LHS: diffusion (with -nu/r^2 inside) + implicit mass
         aW_diff = nu * (betaW + rinv * alphaW)
         aE_diff = nu * (betaE + rinv * alphaE)
-        aP_diff = nu * (betaP + rinv * alphaP)
+        aP_diff = nu * (betaP + rinv * alphaP - rinv2)
 
-        aW_conv =  rho * ur * alphaW
-        aE_conv =  rho * ur * alphaE
-        aP_conv =  rho * ur * alphaP
-        aP_metric = rho * (ur * rinv)
+        aW = aW_diff
+        aE = aE_diff
+        aP = (-(aW + aE)) + aP_diff + mass_coeff
 
-        aW = aW_diff + aW_conv
-        aE = aE_diff + aE_conv
-        aP = (-(aW + aE)) + (aP_diff + aP_conv + aP_metric) - (nu * rinv2)
+        # RHS: explicit convection + explicit metric + implicit mass RHS
+        dt_dr_prev  = alphaW * tW_prev + alphaP * tP_prev + alphaE * tE_prev
+        conv_metric = rho * (ur_prev * dt_dr_prev + (ur_prev * tP_prev) * rinv)
+        b = - conv_metric + mass_coeff * tP_prev
 
-        if not np.all(np.isfinite([aW, aE, aP])):
-            _nan_debug_dump("u_theta coeffs non-finite", r, dW, dE,
-                            dict(aW=aW, aE=aE, aP=aP,
-                                 aW_diff=aW_diff, aE_diff=aE_diff, aP_diff=aP_diff,
-                                 aW_conv=aW_conv, aE_conv=aE_conv, aP_conv=aP_conv,
-                                 aP_metric=aP_metric, ur=ur))
-            
-        self.coeffs_t = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=0.0)
+        if not np.all(np.isfinite([aW, aE, aP, b])):
+            _nan_debug_dump("u_theta coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b))
+        self.coeffs_t = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b))
+
 
     def assemble_coeffs_p(self, rho: float) -> None:
         W, E = self.inner, self.outer
@@ -221,49 +189,40 @@ class Node:
             return
 
         r  = float(self._r)
-        dW = self._drW()
-        dE = self._drE()
-        eps = 1e-12
-
+        dW = self._drW(); dE = self._drE(); eps = 1e-12
         if (not np.isfinite(dW)) or (not np.isfinite(dE)) or (dW <= eps) or (dE <= eps) or ((dW + dE) <= eps):
             _nan_debug_dump("p bad spacing", r, dW, dE, {})
             self.coeffs_p = EqCoeffs(np.nan, np.nan, np.nan, np.nan)
             return
-        
-        rinv  = 1.0 / (r if r > eps else eps)
 
+        rinv = 1.0 / (r if r > eps else eps)
+
+        # central-diff operators on non-uniform grid
         alphaW = - dE / (dW * (dW + dE))
         alphaE =   dW / (dE * (dW + dE))
         alphaP = (dE - dW) / (dW * dE)
 
-        betaW =  2.0 / ((dE + dW) * dW)
-        betaE =  2.0 / ((dE + dW) * dE)
-        betaP = - (betaW + betaE)
+        betaW  =  2.0 / ((dE + dW) * dW)
+        betaE  =  2.0 / ((dE + dW) * dE)
 
-        if not np.all(np.isfinite([alphaW, alphaP, alphaE, betaW, betaP, betaE])):
-            _nan_debug_dump("p operators non-finite", r, dW, dE,
-                            dict(alphaW=alphaW, alphaP=alphaP, alphaE=alphaE,
-                                 betaW=betaW, betaP=betaP, betaE=betaE))
+        # positive off-diagonals; diagonal is their sum
+        aW = max(0.0, betaW + rinv * alphaW)
+        aE = max(0.0, betaE + rinv * alphaE)
+        aP = aW + aE
 
-        aW = betaW + rinv * alphaW
-        aE = betaE + rinv * alphaE
-        aP = (-(aW + aE)) + (rinv * alphaP)
-
+        # divergence of r*u_r (explicit in u_r)
         uW = 0.0 if W._u_r is None else float(W._u_r)
         uP = 0.0 if self._u_r is None else float(self._u_r)
         uE = 0.0 if E._u_r is None else float(E._u_r)
+        qW, qP, qE = (float(W._r)*uW), (r*uP), (float(E._r)*uE)
 
-        qW, qP, qE = (float(W._r) * uW), (r * uP), (float(E._r) * uE)
-        d_q_dr_i = alphaW * qW + alphaP * qP + alphaE * qE
+        d_q_dr_i = alphaW*qW + alphaP*qP + alphaE*qE
         Di = rinv * d_q_dr_i
         b = rho * Di
 
         if not np.all(np.isfinite([aW, aE, aP, b])):
-            _nan_debug_dump("p coeffs non-finite", r, dW, dE,
-                            dict(aW=aW, aE=aE, aP=aP, b=b,
-                                 qW=qW, qP=qP, qE=qE, d_q_dr_i=d_q_dr_i, Di=Di))
-
-        self.coeffs_p = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b))
+            _nan_debug_dump("p coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b, Di=Di))
+        self.coeffs_p = EqCoeffs(float(aP), float(aW), float(aE), float(b))
 
     # --- local residuals (diagnostics) ---
     def update_local_residuals(self) -> None:

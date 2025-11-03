@@ -109,6 +109,8 @@ class Mesh:
         print("[MESH DBG] inner flag =", self.nodes[0].is_inner_bc, "outer flag =", self.nodes[-1].is_outer_bc)
         print("[MESH DBG] any r<r_inner? ->", any(nd.r < self.r_in for nd in self.nodes))
 
+        self._audit_mesh_spacings()
+
 
     def link_radial_neighbors(self) -> None:
         """Sort nodes by r (inner→outer) and establish neighbor pointers."""
@@ -120,3 +122,18 @@ class Mesh:
                 inner=self.nodes[i-1] if i > 0 else None,
                 outer=self.nodes[i+1] if i < len(self.nodes)-1 else None,
             )
+
+    def _audit_mesh_spacings(self):
+        import numpy as np
+        ds = []
+        for nd in self.nodes:
+            if nd.inner is not None and nd.outer is not None:
+                dW = nd.r - nd.inner.r
+                dE = nd.outer.r - nd.r
+                ds.extend([dW, dE])
+        if not ds:
+            print("[MESH AUDIT] No interior nodes to audit.")
+            return
+        ds = np.asarray(ds, float)
+        ratio = ds.max() / (ds.min() + 1e-30)
+        print(f"[MESH AUDIT] min Δr={ds.min():.3e}, max Δr={ds.max():.3e}, ratio={ratio:.2f}")
