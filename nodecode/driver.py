@@ -49,15 +49,6 @@ class SorCase:
 
         self.mesh: Mesh | None = None
 
-    def _initial_fields_solid_body(self, Omega: float) -> Dict[str, List[float]]:
-        assert self.mesh is not None
-        rs = np.array([nd.r for nd in self.mesh.nodes], dtype=float)
-        r_in = float(rs.min())
-        u_r0 = np.zeros_like(rs)
-        u_t0 = Omega * rs
-        p0   = self.p0 + 0.5 * self.rho * (Omega**2) * (rs*rs - r_in*r_in)
-        return {"u_r": u_r0.tolist(), "u_theta": u_t0.tolist(), "p": p0.tolist()}
-
     def build_mesh(self) -> None:
         """Use your Mesh builder to create nodes and set BC values on the boundary nodes."""
         self.mesh = Mesh(r_out=self.r_main, r_in=self.r_inner)
@@ -86,7 +77,7 @@ class SorCase:
         inner_bc = {"p":   self.p0}
         return outer_bc, inner_bc
 
-    def run(self, init_fields: Dict[str, List[float]] | None = None) -> Dict[str, Any]:
+    def run(self, init_fields = None):
         if self.mesh is None:
             self.build_mesh()
         solver = SORSolver(mesh=self.mesh,
@@ -94,41 +85,11 @@ class SorCase:
                         omega_r=self.omega_r, omega_t=self.omega_t, omega_p=self.omega_p,
                         tol=self.tol, max_iter=self.max_iter,
                         pseudo_dt=getattr(self, "pseudo_dt", None))
-
         # use override if provided
         init_fields = init_fields if init_fields is not None else self._initial_fields()
         outer_bc, inner_bc = self._bcs()
         return solver.solve(init_fields=init_fields, outer_bc=outer_bc, inner_bc=inner_bc)
     
-    def run_solid_body_rotation(self, N_total: int = 10, Omega: float = 25.0) -> dict:
-        """
-        Build a uniform-Δr mesh with ~N_total interior nodes and run the solver with:
-        u_r(out) = 0
-        u_θ(out) = Ω * r_out
-        p(inner) = p0
-        After convergence, verify dp/dr ≈ ρ u_θ^2 / r and u_r ≈ 0.
-        """
-        # Choose counts per region that yield ~N_total Interior Nodes
-        self.n_inner = max(1, N_total // 4)
-        self.n_main  = max(1, N_total // 2)
-        self.n_outer = max(1, N_total - self.n_inner - self.n_main)
-
-        # Set BCs for this test
-        self.u_r_out = 0.0
-        self.u_t_out = Omega * self.r_outer
-        # p0 is already a parameter (inner Dirichlet)
-
-        # Build mesh and solve
-        self.build_mesh()
-        init_fields = self._initial_fields_solid_body(Omega)
-        result = self.run(init_fields=init_fields)
-
-        # Pull fields in inner->outer order
-        rs = [nd.r for nd in self.mesh.nodes]
-        ur = [nd.u_r if nd.u_r is not None else 0.0 for nd in self.mesh.nodes]
-        ut = [nd.u_theta if nd.u_theta is not None else 0.0 for nd in self.mesh.nodes]
-        pp = [nd.p if nd.p is not None else 0.0 for nd in self.mesh.nodes]
-
 
 def main(argv: List[str]) -> int:
     case = SorCase(
@@ -141,8 +102,8 @@ def main(argv: List[str]) -> int:
                 rho     = 1000.0,
                 nu      = 1.0e-6,
                 p0      = 101325.0,
-                u_r_out = 0.0,
-                u_t_out = 1.0,
+                u_r_out = 5.0,
+                u_t_out = 2.0,
                 omega_r = 1.0,
                 omega_t = 1.0,
                 omega_p = 1.3,
