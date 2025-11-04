@@ -24,7 +24,11 @@ class SORSolver:
         self.tol = float(tol)
         self.max_iter = int(max_iter)
         self.history: List[Dict[str, float]] = []
-        self.pseudo_dt = pseudo_dt
+        self.pseudo_dt = float(pseudo_dt) if pseudo_dt is not None else 1e-4
+        self.ps_min, self.ps_max = 1e-6, 1e-2
+        self.ps_grow, self.ps_shrink = 2.0, 0.25
+        self._improve_streak = 0
+        self._last_res = None
 
 
     # --- public API ---
@@ -42,6 +46,11 @@ class SORSolver:
         self._apply_initial_guess(init_fields)
         self._mark_boundaries_and_values(outer_bc, inner_bc)
 
+        n_inner = sum(int(nd.is_inner_bc) for nd in self.mesh.nodes)
+        n_outer = sum(int(nd.is_outer_bc) for nd in self.mesh.nodes)
+        assert n_inner == 1, f"Expected 1 inner-BC node, found {n_inner}"
+        assert n_outer == 1, f"Expected 1 outer-BC node, found {n_outer}"
+        
         # Connectivity debug
         print("\\n[DEBUG] Mesh Connectivity (inner → outer):")
         for nd in sorted(self.mesh.nodes, key=lambda n: n.r):
@@ -51,6 +60,7 @@ class SORSolver:
         print("[DEBUG] End connectivity\\n")
 
         # Main SOR loop
+        input("\n[PAUSE] Press <Enter> to begin SOR iterations...")
         for it in range(1, self.max_iter + 1):
             # Snapshots for Δ
             for nd in self.mesh.nodes:
@@ -137,16 +147,22 @@ class SORSolver:
 
         print(f"[DBG] BCs: inner r={inner.r:.6e} p*={inner._p!r} | outer r={outer.r:.6e} ur*={outer._u_r!r} ut*={outer._u_theta!r}")
         
-
     def _apply_bcs(self) -> None:
         for nd in self.mesh.nodes:
             if nd.is_outer_bc:
                 # Outer Dirichlet rows
                 nd.coeffs_r = EqCoeffs(1.0, 0.0, 0.0, nd._u_r if nd._u_r is not None else 0.0)
                 nd.coeffs_t = EqCoeffs(1.0, 0.0, 0.0, nd._u_theta if nd._u_theta is not None else 0.0)
+                # Hard-set the state to the BC value too (prevents drift)
+                if nd._u_r is None: nd._u_r = 0.0
+                if nd._u_theta is None: nd._u_theta = 0.0
+                nd._u_r = float(nd.coeffs_r.b)
+                nd._u_theta = float(nd.coeffs_t.b)
             if nd.is_inner_bc:
                 # Inner Dirichlet for pressure
                 nd.coeffs_p = EqCoeffs(1.0, 0.0, 0.0, nd._p if nd._p is not None else 0.0)
+                if nd._p is None: nd._p = 0.0
+                nd._p = float(nd.coeffs_p.b)
 
     def _debug_validate_coeffs(self, stage: str) -> None:
         """Print-only validation; NO forcing or raising."""

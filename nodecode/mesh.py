@@ -82,6 +82,7 @@ class Mesh:
         # Link neighbors inner↔outer (sorted by radius, robust to non-uniform Δr)
         self.link_radial_neighbors()
 
+
         # Mark BC flags for clarity
         self.nodes[0].is_inner_bc = True
         self.nodes[-1].is_outer_bc = True
@@ -105,11 +106,30 @@ class Mesh:
             raise ValueError(f"Non-increasing radii in mesh. min Δr = {dr.min():.3e}")
 
         self.link_radial_neighbors()
+        # --- ADD: mesh summary ---
+        print(f"[MESH] N = {len(self.nodes)}")
+        print("[MESH] radii (inner→outer):",
+            " ".join(f"{nd.r:.6e}" for nd in self.nodes))
+        for i, nd in enumerate(self.nodes):
+            rin = self.nodes[i-1].r if i > 0 else None
+            rout = self.nodes[i+1].r if i < len(self.nodes)-1 else None
+            print(f"  i={i:02d} r={nd.r:.6e}  inner={rin}  outer={rout}")
+
+        print("[MESH] N=", len(self.nodes))
+        print("[MESH] radii:", [f"{nd.r:.6e}" for nd in self.nodes])
+        for nd in self.nodes:
+            if nd.inner and nd.outer:
+                dW = nd.r - nd.inner.r
+                dE = nd.outer.r - nd.r
+                if dW <= 0 or dE <= 0:
+                    print("[MESH] BAD SPACING at r=", nd.r)
+
         print("[MESH DBG] min r =", min(nd.r for nd in self.nodes))
         print("[MESH DBG] inner flag =", self.nodes[0].is_inner_bc, "outer flag =", self.nodes[-1].is_outer_bc)
         print("[MESH DBG] any r<r_inner? ->", any(nd.r < self.r_in for nd in self.nodes))
 
         self._audit_mesh_spacings()
+
 
 
     def link_radial_neighbors(self) -> None:

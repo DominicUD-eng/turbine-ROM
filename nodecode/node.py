@@ -101,9 +101,10 @@ class Node:
         alphaW = - dE / (dW * (dW + dE))
         alphaE =   dW / (dE * (dW + dE))
         alphaP = (dE - dW) / (dW * dE)
+
         betaW  =  2.0 / ((dE + dW) * dW)
         betaE  =  2.0 / ((dE + dW) * dE)
-        betaP  = - (betaW + betaE)
+        betaP  = -(betaW + betaE)
 
         # Fields (pressure current; velocities use previous iterate for explicit parts)
         pW = 0.0 if W._p    is None else float(W._p)
@@ -115,22 +116,21 @@ class Node:
         uE_prev = 0.0 if E._u_r_prev        is None else float(E._u_r_prev)
         tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
 
-        metric_rhs_ur = nu * (uP_prev) * rinv2 
-
-        # LHS: diffusion (with -nu/r^2 inside) + implicit mass (rho/dt)
-        aW_diff = nu * (betaW + rinv * alphaW)
-        aE_diff = nu * (betaE + rinv * alphaE)
-        aP_diff = nu * (betaP + rinv * alphaP)
-
-        aW = aW_diff
-        aE = aE_diff
-        aP = (-(aW + aE)) + aP_diff + mass_coeff  # <-- +rho/dt strengthens diagonal
+        # LHS: diffusion (keep -nu/r^2 on LHS via +nu*rinv2 on the diagonal) + implicit mass (rho/dt)
+        aW = nu * (betaW + rinv * alphaW)
+        aE = nu * (betaE + rinv * alphaE)
+        aP = (aW + aE) + mass_coeff + nu * rinv2
 
         # RHS: pressure gradient + centrifugal - explicit convection + implicit mass RHS
         dp_dr_i   = alphaW * pW + alphaP * pP + alphaE * pE
-        dudr_prev = alphaW * uW_prev + alphaP * uP_prev + alphaE * uE_prev
+
+        if uP_prev <= 0.0:
+            dudr_prev = (uP_prev - uW_prev) / max(dW, eps)
+        else: 
+            dudr_prev = (uE_prev - uP_prev) / max(dE,eps)
+
         conv_RHS  = rho * (uP_prev * dudr_prev)
-        b = - dp_dr_i + rho * (tP_prev * tP_prev) * rinv - conv_RHS + mass_coeff * uP_prev + metric_rhs_ur
+        b = - dp_dr_i + rho * (tP_prev * tP_prev) * rinv - conv_RHS + mass_coeff * uP_prev
 
         # Final row
         if not np.all(np.isfinite([aW, aE, aP, b])):
@@ -153,6 +153,7 @@ class Node:
 
         rinv  = 1.0 / (r if r > eps else eps); rinv2 = rinv * rinv
 
+        # Non-uniform central operators
         alphaW = - dE / (dW * (dW + dE))
         alphaE =   dW / (dE * (dW + dE))
         alphaP = (dE - dW) / (dW * dE)
@@ -165,21 +166,19 @@ class Node:
         tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
         tE_prev = 0.0 if E._u_theta_prev    is None else float(E._u_theta_prev)
 
-        metric_rhs_theta = nu * (tP_prev) * rinv2 
-
-        # LHS: diffusion (with -nu/r^2 inside) + implicit mass
-        aW_diff = nu * (betaW + rinv * alphaW)
-        aE_diff = nu * (betaE + rinv * alphaE)
-        aP_diff = nu * (betaP + rinv * alphaP)
-
-        aW = aW_diff
-        aE = aE_diff
-        aP = (-(aW + aE)) + aP_diff + mass_coeff
+        # LHS: diffusion (keep -nu/r^2 on LHS via +nu*rinv2 on the diagonal) + implicit mass
+        aW = nu * (betaW + rinv * alphaW)
+        aE = nu * (betaE + rinv * alphaE)
+        aP = (aW + aE) + mass_coeff + nu * rinv2
 
         # RHS: explicit convection + explicit metric + implicit mass RHS
-        dt_dr_prev  = alphaW * tW_prev + alphaP * tP_prev + alphaE * tE_prev
+        if ur_prev >= 0.0:
+            dt_dr_prev = (tP_prev - tW_prev) / max(dW, eps)
+        else:
+            dt_dr_prev = (tE_prev - tP_prev) / max(dE, eps)
+
         conv_metric = rho * (ur_prev * dt_dr_prev + (ur_prev * tP_prev) * rinv)
-        b = - conv_metric + mass_coeff * tP_prev + metric_rhs_theta
+        b = - conv_metric + mass_coeff * tP_prev
 
         if not np.all(np.isfinite([aW, aE, aP, b])):
             _nan_debug_dump("u_theta coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b))
@@ -194,6 +193,7 @@ class Node:
 
         r  = float(self._r)
         dW = self._drW(); dE = self._drE(); eps = 1e-12
+
         if (not np.isfinite(dW)) or (not np.isfinite(dE)) or (dW <= eps) or (dE <= eps) or ((dW + dE) <= eps):
             _nan_debug_dump("p bad spacing", r, dW, dE, {})
             self.coeffs_p = EqCoeffs(np.nan, np.nan, np.nan, np.nan)
