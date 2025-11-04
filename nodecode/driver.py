@@ -1,50 +1,10 @@
 # sor_driver.py
 from __future__ import annotations
 import sys
-import argparse
 from typing import Dict, List, Any, Tuple
 import numpy as np
-
-
 from mesh import Mesh
 from SORSolver import SORSolver
-
-# ---------- Utilities ----------
-def require_node_api(mesh) -> None:
-    """Fail early with a clear message if Node API expected by SORSolver is missing."""
-    needed_attrs = [
-    # state mgmt
-    "snapshot_prev", "local_deltas", "update_local_residuals",
-    # coefficient assembly
-    "assemble_coeffs_u_r", "assemble_coeffs_u_theta", "assemble_coeffs_p",
-    # SOR updates
-    "sor_update_u_r", "sor_update_u_theta", "sor_update_p",
-    # boundary controls / neighbors
-    "is_inner_bc", "is_outer_bc", "set_neighbors",
-    # coefficient holders
-    "coeffs_r", "coeffs_t", "coeffs_p",
-    # primary unknowns
-    "u_r", "u_theta", "p", "r",
-    # BC storage used by solver’s _apply_bcs
-    "_u_r", "_u_theta", "_p",
-    ]
-    if not getattr(mesh, "nodes", None):
-        raise ValueError("Mesh has no nodes; buildMesh likely did not run.")
-    nd = mesh.nodes[0]
-    missing: List[str] = [attr for attr in needed_attrs if not hasattr(nd, attr)]
-    if missing:
-        items = "\n - ".join(missing)
-        raise NotImplementedError(
-            "Your current Node implementation is missing methods/fields required by SORSolver.\n"
-            "Please add the following to node.py (or adapt SORSolver accordingly):\n"
-            f" - {items}\n\n"
-            "Tip: coeffs_* can be small containers (e.g., dataclass) holding (aP, aE, aW, b). "
-            "assemble_coeffs_* should populate those based on your discretization; "
-            "sor_update_* should perform the over-relaxed update using omega."
-        )
-
-
-# ---------- Case definition ----------
 
 class SorCase:
     """
@@ -129,8 +89,6 @@ class SorCase:
     def run(self, init_fields: Dict[str, List[float]] | None = None) -> Dict[str, Any]:
         if self.mesh is None:
             self.build_mesh()
-        require_node_api(self.mesh)
-
         solver = SORSolver(mesh=self.mesh,
                         rho=self.rho, nu=self.nu,
                         omega_r=self.omega_r, omega_t=self.omega_t, omega_p=self.omega_p,
