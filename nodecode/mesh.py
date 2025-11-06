@@ -2,6 +2,7 @@
 import numpy as np
 from node import Node
 
+
 class Mesh:
     def __init__(self, r_out: float, r_in: float) -> None:
         assert r_out > r_in > 0.0, "Require r_out > r_in > 0"

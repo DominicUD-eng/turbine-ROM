@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Tuple
 import numpy as np
 from mesh import Mesh
 from SORSolver import SORSolver
+from node import plot_residual_history
 
 class SorCase:
     """
@@ -114,6 +115,7 @@ def main(argv: List[str]) -> int:
 
     try:
         result = case.run()
+        plot_residual_history(show=True, savepath="residuals.png")
     except NotImplementedError as e:
         # Clear, actionable guidance if Node API is not ready
         print("\n[ERROR] Incomplete Node implementation for SORSolver:\n")

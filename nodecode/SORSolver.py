@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Dict, Any, List
 from node import EqCoeffs
-import csv
+from node import collect_residual_norms
 
 class SORSolver:
     """
@@ -85,6 +85,7 @@ class SORSolver:
             # Residuals (optional; useful for debugging)
             for nd in self.mesh.nodes:
                 nd.update_local_residuals()
+            collect_residual_norms(self.mesh.nodes, it)
 
             # Global max-norm over updates (Δ)
             max_delta = 0.0

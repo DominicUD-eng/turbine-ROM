@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 import numpy as np
+import matplotlib.pyplot as plt
+
 
 def _nan_debug_dump(phase, r, dW, dE, vals: dict):
     parts = [f"[NAN-DBG] {phase} r={r:.9e} dW={dW:.9e} dE={dE:.9e}"]
@@ -19,7 +21,86 @@ class EqCoeffs:
 
 @dataclass
 class EqResiduals:
-    R: float = 0.0   # local residual (e.g., aP*phi - (aW*phi_W + aE*phi_E + b))
+    R: float = 1.0   # local residual (e.g., aP*phi - (aW*phi_W + aE*phi_E + b))
+
+# --- Residual history (module-level utilities) --------------------------------
+# We store the MAX-norm of the pointwise residuals over all nodes each iteration.
+_RES_HIST = {'iter': [], 'ur_max': [], 'ut_max': [], 'p_max': []}
+
+def reset_residual_history() -> None:
+    """Clear the stored residual history."""
+    for k in _RES_HIST:
+        _RES_HIST[k].clear()
+
+def collect_residual_norms(nodes: list["Node"], it: int) -> None:
+    """
+    Compute and store the max |residual| across all nodes for each equation.
+    Non-finite values are ignored; if all are non-finite, we store a tiny epsilon.
+    """
+    eps = 1e-16
+
+    def _safe_max(vals):
+        # vals may be a generator; realize it once
+        arr = np.asarray([abs(v) for v in vals if np.isfinite(v)], dtype=float)
+        if arr.size == 0:
+            return eps
+        m = float(np.max(arr))
+        # clamp to be strictly positive for log plots
+        return m if (np.isfinite(m) and m > 0.0) else eps
+
+    ur_max = _safe_max([nd.res_r.R for nd in nodes])
+    ut_max = _safe_max([nd.res_t.R for nd in nodes])
+    p_max  = _safe_max([nd.res_p.R for nd in nodes])
+
+    _RES_HIST['iter'].append(int(it))
+    _RES_HIST['ur_max'].append(ur_max)
+    _RES_HIST['ut_max'].append(ut_max)
+    _RES_HIST['p_max'].append(p_max)
+
+def plot_residual_history(*, show: bool = True, savepath: str | None = None) -> None:
+    if not _RES_HIST['iter']:
+        print("[PLOT] No residual history collected; nothing to plot.")
+        return
+
+    its = np.asarray(_RES_HIST['iter'], dtype=float)
+    ur  = np.asarray(_RES_HIST['ur_max'], dtype=float)
+    ut  = np.asarray(_RES_HIST['ut_max'], dtype=float)
+    pp  = np.asarray(_RES_HIST['p_max'],  dtype=float)
+
+    eps = 1e-16
+
+    def scrub(arr):
+        # Replace non-finite with eps, and clamp non-positives to eps
+        out = np.nan_to_num(arr, nan=eps, posinf=np.finfo(float).max/1e6, neginf=eps)
+        out[out <= 0.0] = eps
+        return out
+
+    ur, ut, pp = scrub(ur), scrub(ut), scrub(pp)
+
+    # Choose safe y-limits
+    y_all = np.concatenate([ur, ut, pp])
+    y_min = float(np.min(y_all[np.isfinite(y_all)])) if np.any(np.isfinite(y_all)) else eps
+    y_max = float(np.max(y_all[np.isfinite(y_all)])) if np.any(np.isfinite(y_all)) else 1.0
+    y_min = max(y_min, eps)
+    y_max = max(y_max, y_min * 1.1)  # ensure some dynamic range
+
+    fig, ax = plt.subplots()
+    ax.set_yscale('log', nonpositive='clip')
+    ax.plot(its, ur, label=r"$u_r$ residual (max)")
+    ax.plot(its, ut, label=r"$u_\theta$ residual (max)")
+    ax.plot(its, pp, label=r"$p$ residual (max)")
+    ax.set_ylim(y_min/10.0, y_max*10.0)  # force safe bounds
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Max |residual|")
+    ax.grid(True, which="both", linestyle=":")
+    ax.legend()
+    fig.tight_layout()
+    if savepath:
+        fig.savefig(savepath, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+# -------------------------------------------------------------------------------
 
 class Node:
     def __init__(self, radius: float) -> None:
@@ -84,167 +165,219 @@ class Node:
     # --- coefficient assembly (second-order, non-uniform central in r) ---
     def assemble_coeffs_u_r(self, rho: float, nu: float, mass_coeff: float = 0.0) -> None:
         W, E = self.inner, self.outer
+
+        # If this node is a Dirichlet boundary, leave to the BC handler.
         if W is None or E is None:
-            self.coeffs_r = EqCoeffs(1.0, 0.0, 0.0, 0.0)
+            self.coeffs_r = EqCoeffs(aP=1.0, aW=0.0, aE=0.0, b=0.0)
             return
 
-        r  = float(self._r)
-        dW = self._drW(); dE = self._drE(); eps = 1e-12
-        if (not np.isfinite(dW)) or (not np.isfinite(dE)) or (dW <= eps) or (dE <= eps) or ((dW + dE) <= eps):
-            _nan_debug_dump("u_r bad spacing", r, dW, dE, {})
-            self.coeffs_r = EqCoeffs(np.nan, np.nan, np.nan, np.nan)
+        # ----------------------------
+        # Geometry & spacings (explicit names)
+        # ----------------------------
+        r_i: float      = float(self._r)
+        dr_W: float     = float(self._r - W._r)        # Δr_W = r_i   − r_{i-1}
+        dr_E: float     = float(E._r - self._r)        # Δr_E = r_{i+1} − r_i
+        d_r:  float     = 0.5 * (dr_W + dr_E)          # centered Δr for the stencil
+
+        # Guard against pathologies
+        eps = 1e-12
+        if not (np.isfinite(d_r) and d_r > eps and r_i > eps):
+            self.coeffs_r = EqCoeffs(aP=np.nan, aW=np.nan, aE=np.nan, b=np.nan)
             return
 
-        rinv  = 1.0 / (r if r > eps else eps); rinv2 = rinv * rinv
+        rinv      = 1.0 / r_i
+        rinv2     = rinv * rinv
+        inv_dr    = 1.0 / d_r
+        inv_dr2   = inv_dr * inv_dr
 
-        # Non-uniform central operators
-        alphaW = - dE / (dW * (dW + dE))
-        alphaE =   dW / (dE * (dW + dE))
-        alphaP = (dE - dW) / (dW * dE)
+        # ----------------------------
+        # Coefficients aW, aE, aP  (implicit diffusion + metric sink on diag)
+        # ----------------------------
+        aW: float = -nu * (  inv_dr2 - 0.5 * rinv * inv_dr )
+        aE: float = -nu * (  inv_dr2 + 0.5 * rinv * inv_dr )
+        aP: float =  mass_coeff + aW + aE + nu * rinv2    # rho/Δt + aW + aE + ν/r_i^2
 
-        betaW  =  2.0 / ((dE + dW) * dW)
-        betaE  =  2.0 / ((dE + dW) * dE)
-        betaP  = -(betaW + betaE)
+        # ----------------------------
+        # Explicit RHS b_i (pressure grad + convection + centrifugal)
+        #   All “old/prev” values are taken from the previous iterate.
+        # ----------------------------
+        # Pressures
+        p_im1: float = 0.0 if W._p       is None else float(W._p)
+        p_ip1: float = 0.0 if E._p       is None else float(E._p)
 
-        # Fields (pressure current; velocities use previous iterate for explicit parts)
-        pW = 0.0 if W._p    is None else float(W._p)
-        pP = 0.0 if self._p is None else float(self._p)
-        pE = 0.0 if E._p    is None else float(E._p)
+        # Radial velocities (previous iterate)
+        ur_im1_old: float = 0.0 if W._u_r_prev     is None else float(W._u_r_prev)
+        ur_i_old:   float = 0.0 if self._u_r_prev  is None else float(self._u_r_prev)
+        ur_ip1_old: float = 0.0 if E._u_r_prev     is None else float(E._u_r_prev)
 
-        uW_prev = 0.0 if W._u_r_prev        is None else float(W._u_r_prev)
-        uP_prev = 0.0 if self._u_r_prev     is None else float(self._u_r_prev)
-        uE_prev = 0.0 if E._u_r_prev        is None else float(E._u_r_prev)
-        tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
+        # Tangential velocity (previous iterate)
+        ut_i_old:   float = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
 
-        # LHS: diffusion (keep -nu/r^2 on LHS via +nu*rinv2 on the diagonal) + implicit mass (rho/dt)
-        rW_face = 0.5 * (r + float(W._r))
-        rE_face = 0.5 * (r + float(E._r))
-        aW = nu * (rW_face / dW)
-        aE = nu * (rE_face / dE)
-        aP = (aW + aE) + mass_coeff + nu * rinv2
+        # Centered derivatives that appear in the explicit pieces
+        dp_dr_centered: float   = (p_ip1 - p_im1) * 0.5 * inv_dr
+        dur_dr_centered_old: float = (ur_ip1_old - ur_im1_old) * 0.5 * inv_dr
 
-        # RHS: pressure gradient + centrifugal - explicit convection + implicit mass RHS
-        dp_dr_i   = alphaW * pW + alphaP * pP + alphaE * pE
-        press_RHS = -(1.0/rho)* dp_dr_i
+        b_press: float   = -(1.0 / rho) * dp_dr_centered
+        b_conv:  float   = -rho * ur_i_old * dur_dr_centered_old
+        b_cent:  float   =  rho * (ut_i_old * ut_i_old) * rinv
 
-        dudr_prev = alphaW*uW_prev + alphaP*uP_prev + alphaE*uE_prev
-        conv_RHS  = rho * (uP_prev * dudr_prev)
-        b = press_RHS + rho * (tP_prev * tP_prev) * rinv - conv_RHS + mass_coeff * uP_prev
+        b_i: float = b_press + b_conv + b_cent
+        if not np.isfinite(b_i):
+            b_i=0.0
 
-        # Final row
-        if not np.all(np.isfinite([aW, aE, aP, b])):
-            _nan_debug_dump("u_r coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b))
-        self.coeffs_r = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b))
-
+        # Save row
+        self.coeffs_r = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b_i))
 
     def assemble_coeffs_u_theta(self, rho: float, nu: float, mass_coeff: float = 0.0) -> None:
         W, E = self.inner, self.outer
+
+        # Dirichlet nodes are handled elsewhere
         if W is None or E is None:
-            self.coeffs_t = EqCoeffs(1.0, 0.0, 0.0, 0.0)
+            self.coeffs_t = EqCoeffs(aP=1.0, aW=0.0, aE=0.0, b=0.0)
             return
 
-        r  = float(self._r)
-        dW = self._drW(); dE = self._drE(); eps = 1e-12
-        if (not np.isfinite(dW)) or (not np.isfinite(dE)) or (dW <= eps) or (dE <= eps) or ((dW + dE) <= eps):
-            _nan_debug_dump("u_theta bad spacing", r, dW, dE, {})
-            self.coeffs_t = EqCoeffs(np.nan, np.nan, np.nan, np.nan)
+        # ----------------------------
+        # Geometry & spacings
+        # ----------------------------
+        r_i: float  = float(self._r)
+        dr_W: float = float(self._r - W._r)     # Δr_W = r_i - r_{i-1}
+        dr_E: float = float(E._r - self._r)     # Δr_E = r_{i+1} - r_i
+        d_r:  float = 0.5 * (dr_W + dr_E)       # centered Δr
+
+        eps = 1e-12
+        if not (np.isfinite(d_r) and d_r > eps and r_i > eps):
+            self.coeffs_t = EqCoeffs(aP=np.nan, aW=np.nan, aE=np.nan, b=np.nan)
             return
 
-        rinv  = 1.0 / (r if r > eps else eps); rinv2 = rinv * rinv
+        rinv    = 1.0 / r_i
+        rinv2   = rinv * rinv
+        inv_dr  = 1.0 / d_r
+        inv_dr2 = inv_dr * inv_dr
 
-        # Non-uniform central operators
-        alphaW = - dE / (dW * (dW + dE))
-        alphaE =   dW / (dE * (dW + dE))
-        alphaP = (dE - dW) / (dW * dE)
+        # ----------------------------
+        # Implicit diffusion (same operator as u_r)
+        # ----------------------------
+        aW: float = -nu * (  inv_dr2 - 0.5 * rinv * inv_dr )
+        aE: float = -nu * (  inv_dr2 + 0.5 * rinv * inv_dr )
+        aP: float =  mass_coeff + aW + aE + nu * rinv2
 
-        betaW  =  2.0 / ((dE + dW) * dW)
-        betaE  =  2.0 / ((dE + dW) * dE)
-        betaP  = - (betaW + betaE)
+        # ----------------------------
+        # Explicit RHS (previous iterate values)
+        # ----------------------------
+        # Velocities
+        ut_im1_old: float = 0.0 if W._u_theta_prev    is None else float(W._u_theta_prev)
+        ut_i_old:   float = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
+        ut_ip1_old: float = 0.0 if E._u_theta_prev    is None else float(E._u_theta_prev)
 
-        ur_prev = 0.0 if self._u_r_prev     is None else float(self._u_r_prev)
-        tW_prev = 0.0 if W._u_theta_prev    is None else float(W._u_theta_prev)
-        tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
-        tE_prev = 0.0 if E._u_theta_prev    is None else float(E._u_theta_prev)
+        ur_i_old:   float = 0.0 if self._u_r_prev     is None else float(self._u_r_prev)
 
-        # LHS: diffusion (keep -nu/r^2 on LHS via +nu*rinv2 on the diagonal) + implicit mass
-        rW_face = 0.5 * (r + float(W._r))
-        rE_face = 0.5 * (r + float(E._r))
-        aW = nu * (rW_face / dW)
-        aE = nu * (rE_face / dE)
-        aP = (aW + aE) + mass_coeff + nu * rinv2
+        # Centered derivative of u_theta
+        dut_dr_centered_old: float = (ut_ip1_old - ut_im1_old) * 0.5 * inv_dr
 
-        dt_dr_prev = alphaW*tW_prev + alphaP*tP_prev + alphaE*tE_prev
+        # b pieces
+        b_conv:   float = -rho * ( ur_i_old * dut_dr_centered_old )
+        b_metric: float = -rho * ( ur_i_old * ut_i_old * rinv )
+        b_mass:   float =  mass_coeff * ut_i_old
 
-        conv_metric = rho * (ur_prev * dt_dr_prev + (ur_prev * tP_prev) * rinv)
-        b = - conv_metric + mass_coeff * tP_prev
-
-        if not np.all(np.isfinite([aW, aE, aP, b])):
-            _nan_debug_dump("u_theta coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b))
-        self.coeffs_t = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b))
-
+        b_i: float = b_conv + b_metric + b_mass
+        if not np.isfinite(b_i):
+            b_i=0.0
+        # Save row
+        self.coeffs_t = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b_i))
 
     def assemble_coeffs_p(self, rho: float, nu: float) -> None:
         W, E = self.inner, self.outer
+
+        # If boundary, leave for BC handler (Dirichlet/Neumann applied elsewhere)
         if W is None or E is None:
-            self.coeffs_p = EqCoeffs(1.0, 0.0, 0.0, 0.0)
+            self.coeffs_p = EqCoeffs(aP=1.0, aW=0.0, aE=0.0, b=0.0)
             return
 
-        r  = float(self._r)
-        dW = self._drW(); dE = self._drE(); eps = 1e-12
+        # ----------------------------
+        # Geometry & spacings (explicit names)
+        # ----------------------------
+        r_i: float  = float(self._r)
+        r_W: float  = float(W._r)
+        r_E: float  = float(E._r)
 
-        if (not np.isfinite(dW)) or (not np.isfinite(dE)) or (dW <= eps) or (dE <= eps) or ((dW + dE) <= eps):
-            _nan_debug_dump("p bad spacing", r, dW, dE, {})
-            self.coeffs_p = EqCoeffs(np.nan, np.nan, np.nan, np.nan)
+        dr_W: float = r_i - r_W          # Δr_W
+        dr_E: float = r_E - r_i          # Δr_E
+        d_r:  float = 0.5 * (dr_W + dr_E)  # centered Δr
+
+        eps = 1e-12
+        if not (np.isfinite(d_r) and d_r > eps and r_i > eps and dr_W > eps and dr_E > eps):
+            self.coeffs_p = EqCoeffs(aP=np.nan, aW=np.nan, aE=np.nan, b=np.nan)
             return
 
-        rinv = 1.0 / (r if r > eps else eps)
+        rinv    = 1.0 / r_i
+        rinv2   = rinv * rinv
+        inv_dr  = 1.0 / d_r
+        inv_dr2 = inv_dr * inv_dr
 
-        # central-diff operators on non-uniform grid
-        alphaW = - dE / (dW * (dW + dE))
-        alphaE =   dW / (dE * (dW + dE))
-        alphaP = (dE - dW) / (dW * dE)
+        # Face radii
+        r_Wf: float = 0.5 * (r_i + r_W)
+        r_Ef: float = 0.5 * (r_E + r_i)
 
-        betaW  =  2.0 / ((dE + dW) * dW)
-        betaE  =  2.0 / ((dE + dW) * dE)
+        # ----------------------------
+        # LHS coefficients (r-weighted Poisson)
+        # ----------------------------
+        aW: float =  r_Wf / dr_W
+        aE: float =  r_Ef / dr_E
+        aP: float =  aW + aE
 
-        # positive off-diagonals; diagonal is their sum
-        rW_face = 0.5 * (r + float(W._r))
-        rE_face = 0.5 * (r + float(E._r))
-        aW =  (rW_face / dW)
-        aE =  (rE_face / dE)
-        aP =  aW + aE
+        # ----------------------------
+        # RHS b_i (explicit from previous iterate)
+        # ----------------------------
+        # Previous-iterate velocities
+        ur_im1_old: float = 0.0 if W._u_r_prev        is None else float(W._u_r_prev)
+        ur_i_old:   float = 0.0 if self._u_r_prev     is None else float(self._u_r_prev)
+        ur_ip1_old: float = 0.0 if E._u_r_prev        is None else float(E._u_r_prev)
+        ut_i_old:   float = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
 
-        # divergence of r*u_r (explicit in u_r)
-        uW = 0.0 if W._u_r_prev is None else float(W._u_r_prev)
-        uP = 0.0 if self._u_r_prev is None else float(self._u_r_prev)
-        uE = 0.0 if E._u_r_prev is None else float(E._u_r_prev)
-        qW, qP, qE = (float(W._r)*uW), (r*uP), (float(E._r)*uE)
+        # (1) Divergence term: (1/r) * d(r u_r)/dr (centered)
+        q_im1 = r_W * ur_im1_old
+        q_i   = r_i * ur_i_old
+        q_ip1 = r_E * ur_ip1_old
+        d_q_dr_centered = (q_ip1 - q_im1) * 0.5 * inv_dr
+        div_term = rinv * d_q_dr_centered
+        b_div   = rho * div_term
 
-        d_q_dr_i = alphaW*qW + alphaP*qP + alphaE*qE
-        Di = rinv * d_q_dr_i
+        # (2) Swirl sink: -(u_theta^2)/r^2
+        b_swirl = - rho * (ut_i_old * ut_i_old) * rinv2
 
-       # --- NEW: swirl / centrifugal source  (− u_theta^2 / r^2) ---
-        tW = 0.0 if W._u_theta_prev is None else float(W._u_theta_prev)
-        tP = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
-        tE = 0.0 if E._u_theta_prev is None else float(E._u_theta_prev)
-        t2_over_r2 = (tP * tP) * (rinv * rinv)  # u_theta^2 / r^2 (centered is fine to start)
+        # (3) Radial viscous coupling of u_r: -ν [ u_r'' + (1/r) u_r' ]
+        du_dr_centered  = (ur_ip1_old - ur_im1_old) * 0.5 * inv_dr
+        d2u_dr2_centered = (ur_ip1_old - 2.0*ur_i_old + ur_im1_old) * inv_dr2
+        visc_couple = d2u_dr2_centered + rinv * du_dr_centered
+        b_visc  = - nu * visc_couple
 
-        # --- NEW: viscous coupling from u_r:  - (1/r) ∂( r ∂u_r/∂r ) ---
-        uW = 0.0 if W._u_r_prev is None else float(W._u_r_prev)
-        uP = 0.0 if self._u_r_prev is None else float(self._u_r_prev)
-        uE = 0.0 if E._u_r_prev is None else float(E._u_r_prev)
+        b_i: float = b_div + b_swirl + b_visc
+        if not np.isfinite(b_i):
+            b_i=0.0
+            
+        # Save row
+        self.coeffs_p = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b_i))
+    
+    def compute_continuity_residual(self) -> float:
+        """Face-flux continuity residual: (re*ue - rw*uw)/rP (axisymmetric)."""
+        W, E = self.inner, self.outer
+        if W is None or E is None:
+            return 0.0
+        eps = 1e-12
+        rW, rP, rE = float(W._r), float(self._r), float(E._r)
+        rw = 0.5 * (rW + rP)
+        re = 0.5 * (rP + rE)
 
-        dudr_i   = alphaW*uW + alphaP*uP + alphaE*uE       # ∂u_r/∂r
-        Lur_i    = betaW*uW + (-(betaW+betaE))*uP + betaE*uE  # ∂²u_r/∂r²
-        visc_ur  = Lur_i + rinv * dudr_i                   # (1/r)∂(r ∂u_r/∂r)
+        uW = 0.0 if W._u_r is None else float(W._u_r)
+        uP = 0.0 if self._u_r is None else float(self._u_r)
+        uE = 0.0 if E._u_r is None else float(E._u_r)
 
-        # Combine sources (signs match PNG form):  +ρ*Di  - ρ*t2_over_r2  - ν*visc_ur
-        b = rho*Di - rho*t2_over_r2 - nu*visc_ur
+        u_w = 0.5 * (uW + uP)   # u_{r,i-1/2}
+        u_e = 0.5 * (uP + uE)   # u_{r,i+1/2}
 
-        if not np.all(np.isfinite([aW, aE, aP, b])):
-            _nan_debug_dump("p coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b, Di=Di))
-        self.coeffs_p = EqCoeffs(float(aP), float(aW), float(aE), float(b))
-
+        return abs((re * u_e - rw * u_w) / max(rP, eps))
+    
+    
     # --- local residuals (diagnostics) ---
     def update_local_residuals(self) -> None:
         # u_r residual
@@ -275,14 +408,7 @@ class Node:
 
         # p residual
         if self.inner and self.outer and self._p is not None:
-            phiW = self.inner._p
-            phiE = self.outer._p
-            cp = self.coeffs_p
-            lhs = cp.aP * self._p
-
-            rhs = (cp.aW * (0.0 if phiW is None else phiW)
-            + cp.aE * (0.0 if phiE is None else phiE) + cp.b)
-            self.res_p.R = lhs - rhs
+           self.res_p.R = self.compute_continuity_residual()
 
         else:
             self.res_p.R = 0.0
