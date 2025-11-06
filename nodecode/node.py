@@ -117,20 +117,19 @@ class Node:
         tP_prev = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
 
         # LHS: diffusion (keep -nu/r^2 on LHS via +nu*rinv2 on the diagonal) + implicit mass (rho/dt)
-        aW = nu * (betaW + rinv * alphaW)
-        aE = nu * (betaE + rinv * alphaE)
+        rW_face = 0.5 * (r + float(W._r))
+        rE_face = 0.5 * (r + float(E._r))
+        aW = nu * (rW_face / dW)
+        aE = nu * (rE_face / dE)
         aP = (aW + aE) + mass_coeff + nu * rinv2
 
         # RHS: pressure gradient + centrifugal - explicit convection + implicit mass RHS
         dp_dr_i   = alphaW * pW + alphaP * pP + alphaE * pE
+        press_RHS = -(1.0/rho)* dp_dr_i
 
-        if uP_prev <= 0.0:
-            dudr_prev = (uP_prev - uW_prev) / max(dW, eps)
-        else: 
-            dudr_prev = (uE_prev - uP_prev) / max(dE,eps)
-
+        dudr_prev = alphaW*uW_prev + alphaP*uP_prev + alphaE*uE_prev
         conv_RHS  = rho * (uP_prev * dudr_prev)
-        b = - dp_dr_i + rho * (tP_prev * tP_prev) * rinv - conv_RHS + mass_coeff * uP_prev
+        b = press_RHS + rho * (tP_prev * tP_prev) * rinv - conv_RHS + mass_coeff * uP_prev
 
         # Final row
         if not np.all(np.isfinite([aW, aE, aP, b])):
@@ -157,6 +156,7 @@ class Node:
         alphaW = - dE / (dW * (dW + dE))
         alphaE =   dW / (dE * (dW + dE))
         alphaP = (dE - dW) / (dW * dE)
+
         betaW  =  2.0 / ((dE + dW) * dW)
         betaE  =  2.0 / ((dE + dW) * dE)
         betaP  = - (betaW + betaE)
@@ -167,15 +167,13 @@ class Node:
         tE_prev = 0.0 if E._u_theta_prev    is None else float(E._u_theta_prev)
 
         # LHS: diffusion (keep -nu/r^2 on LHS via +nu*rinv2 on the diagonal) + implicit mass
-        aW = nu * (betaW + rinv * alphaW)
-        aE = nu * (betaE + rinv * alphaE)
+        rW_face = 0.5 * (r + float(W._r))
+        rE_face = 0.5 * (r + float(E._r))
+        aW = nu * (rW_face / dW)
+        aE = nu * (rE_face / dE)
         aP = (aW + aE) + mass_coeff + nu * rinv2
 
-        # RHS: explicit convection + explicit metric + implicit mass RHS
-        if ur_prev >= 0.0:
-            dt_dr_prev = (tP_prev - tW_prev) / max(dW, eps)
-        else:
-            dt_dr_prev = (tE_prev - tP_prev) / max(dE, eps)
+        dt_dr_prev = alphaW*tW_prev + alphaP*tP_prev + alphaE*tE_prev
 
         conv_metric = rho * (ur_prev * dt_dr_prev + (ur_prev * tP_prev) * rinv)
         b = - conv_metric + mass_coeff * tP_prev
@@ -185,7 +183,7 @@ class Node:
         self.coeffs_t = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b))
 
 
-    def assemble_coeffs_p(self, rho: float) -> None:
+    def assemble_coeffs_p(self, rho: float, nu: float) -> None:
         W, E = self.inner, self.outer
         if W is None or E is None:
             self.coeffs_p = EqCoeffs(1.0, 0.0, 0.0, 0.0)
@@ -210,9 +208,11 @@ class Node:
         betaE  =  2.0 / ((dE + dW) * dE)
 
         # positive off-diagonals; diagonal is their sum
-        aW = max(0.0, betaW + rinv * alphaW)
-        aE = max(0.0, betaE + rinv * alphaE)
-        aP = aW + aE
+        rW_face = 0.5 * (r + float(W._r))
+        rE_face = 0.5 * (r + float(E._r))
+        aW =  (rW_face / dW)
+        aE =  (rE_face / dE)
+        aP =  aW + aE
 
         # divergence of r*u_r (explicit in u_r)
         uW = 0.0 if W._u_r_prev is None else float(W._u_r_prev)
@@ -222,7 +222,24 @@ class Node:
 
         d_q_dr_i = alphaW*qW + alphaP*qP + alphaE*qE
         Di = rinv * d_q_dr_i
-        b = rho * Di
+
+       # --- NEW: swirl / centrifugal source  (− u_theta^2 / r^2) ---
+        tW = 0.0 if W._u_theta_prev is None else float(W._u_theta_prev)
+        tP = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)
+        tE = 0.0 if E._u_theta_prev is None else float(E._u_theta_prev)
+        t2_over_r2 = (tP * tP) * (rinv * rinv)  # u_theta^2 / r^2 (centered is fine to start)
+
+        # --- NEW: viscous coupling from u_r:  - (1/r) ∂( r ∂u_r/∂r ) ---
+        uW = 0.0 if W._u_r_prev is None else float(W._u_r_prev)
+        uP = 0.0 if self._u_r_prev is None else float(self._u_r_prev)
+        uE = 0.0 if E._u_r_prev is None else float(E._u_r_prev)
+
+        dudr_i   = alphaW*uW + alphaP*uP + alphaE*uE       # ∂u_r/∂r
+        Lur_i    = betaW*uW + (-(betaW+betaE))*uP + betaE*uE  # ∂²u_r/∂r²
+        visc_ur  = Lur_i + rinv * dudr_i                   # (1/r)∂(r ∂u_r/∂r)
+
+        # Combine sources (signs match PNG form):  +ρ*Di  - ρ*t2_over_r2  - ν*visc_ur
+        b = rho*Di - rho*t2_over_r2 - nu*visc_ur
 
         if not np.all(np.isfinite([aW, aE, aP, b])):
             _nan_debug_dump("p coeffs non-finite", r, dW, dE, dict(aW=aW, aE=aE, aP=aP, b=b, Di=Di))

@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Dict, Any, List
 from node import EqCoeffs
+import csv
 
 class SORSolver:
     """
@@ -50,14 +51,6 @@ class SORSolver:
         n_outer = sum(int(nd.is_outer_bc) for nd in self.mesh.nodes)
         assert n_inner == 1, f"Expected 1 inner-BC node, found {n_inner}"
         assert n_outer == 1, f"Expected 1 outer-BC node, found {n_outer}"
-        
-        # Connectivity debug
-        print("\\n[DEBUG] Mesh Connectivity (inner → outer):")
-        for nd in sorted(self.mesh.nodes, key=lambda n: n.r):
-            rin = nd.inner.r if nd.inner else None
-            rout = nd.outer.r if nd.outer else None
-            print(f"  r={nd.r:.6e}  inner={rin}  outer={rout}")
-        print("[DEBUG] End connectivity\\n")
 
         # Main SOR loop
         input("\n[PAUSE] Press <Enter> to begin SOR iterations...")
@@ -71,7 +64,7 @@ class SORSolver:
             for nd in self.mesh.nodes:
                 nd.assemble_coeffs_u_r(self.rho, self.nu, mass_coeff=mass_coeff)
                 nd.assemble_coeffs_u_theta(self.rho, self.nu, mass_coeff=mass_coeff)
-                nd.assemble_coeffs_p(self.rho)
+                nd.assemble_coeffs_p(self.rho,self.nu)
 
             # Enforce BCs before sweep
             self._apply_bcs()
@@ -102,12 +95,18 @@ class SORSolver:
                 max_delta = max(max_delta, du_r, du_t, dp)
 
             self.history.append({'iter': it, 'max_norm': max_delta})
+
             if max_delta <= self.tol:
+                self._export_results(iterations=it, final_norm=max_delta, prefix="sor")
                 return {'iterations': it, 'final_norm': max_delta, 'history': self.history}
+            
 
         # If we reach here, not converged within max_iter
         final_norm = self.history[-1]['max_norm'] if self.history else float('nan')
+        self._export_results(iterations=it, final_norm=max_delta, prefix="sor")
         return {'iterations': self.max_iter, 'final_norm': final_norm, 'history': self.history}
+    
+        
 
     # --- helpers ---
     def _prepare_mesh_links(self) -> None:
@@ -172,3 +171,29 @@ class SORSolver:
                 arr = np.array([C.aP, C.aW, C.aE, C.b], dtype=float)
                 if not np.all(np.isfinite(arr)):
                     print(f"[COEFF] {stage} r={r:.9e} {name} aP={C.aP!r} aW={C.aW!r} aE={C.aE!r} b={C.b!r} (non-finite)")
+    
+    def _export_results(self, iterations: int, final_norm: float, prefix: str = "sor") -> None:
+        # Print
+        print(f"\n[RESULT] Final iteration summary:")
+        print(f"  Last iteration = {iterations}")
+        print(f"  Final max-norm = {final_norm:.6e}")
+
+        # History CSV
+        import csv
+        with open(f"{prefix}_iterations.csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["iter", "max_norm"])
+            w.writeheader()
+            w.writerows(self.history)
+
+        # Fields CSV (sorted inner→outer)
+        def nv(x):  # None → NaN for clarity in CSV
+            return float('nan') if x is None else float(x)
+
+        ordered = sorted(self.mesh.nodes, key=lambda n: n.r)
+        with open(f"{prefix}_fields.csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["r", "u_r", "u_theta", "p"])
+            w.writeheader()
+            for nd in ordered:
+                w.writerow({"r": nd.r, "u_r": nv(nd.u_r), "u_theta": nv(nd.u_theta), "p": nv(nd.p)})
+
+        print(f"[RESULT] Saved {prefix}_iterations.csv and {prefix}_fields.csv")

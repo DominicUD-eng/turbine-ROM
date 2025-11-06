@@ -127,7 +127,7 @@ def main(argv: List[str]) -> int:
         print("\n[ERROR] Unexpected failure during solve:\n")
         print(repr(e))
         return 4
-
+    
     # Pretty print results
     iters = result.get("iterations", None)
     final = result.get("final_norm", None)
