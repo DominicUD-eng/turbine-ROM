@@ -222,8 +222,7 @@ class Node:
         b_cent:  float   =  rho * (ut_i_old * ut_i_old) * rinv
 
         b_i: float = b_press + b_conv + b_cent
-        if not np.isfinite(b_i):
-            b_i=0.0
+
 
         # Save row
         self.coeffs_r = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b_i))
@@ -280,8 +279,7 @@ class Node:
         b_mass:   float =  mass_coeff * ut_i_old
 
         b_i: float = b_conv + b_metric + b_mass
-        if not np.isfinite(b_i):
-            b_i=0.0
+
         # Save row
         self.coeffs_t = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b_i))
 
@@ -351,10 +349,6 @@ class Node:
         visc_couple = d2u_dr2_centered + rinv * du_dr_centered
         b_visc  = - nu * visc_couple
 
-        b_i: float = b_div + b_swirl + b_visc
-        if not np.isfinite(b_i):
-            b_i=0.0
-            
         # Save row
         self.coeffs_p = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b_i))
     
