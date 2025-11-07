@@ -349,61 +349,82 @@ class Node:
         visc_couple = d2u_dr2_centered + rinv * du_dr_centered
         b_visc  = - nu * visc_couple
 
+        b_i: float = b_div + b_swirl + b_visc
+
         # Save row
         self.coeffs_p = EqCoeffs(aP=float(aP), aW=float(aW), aE=float(aE), b=float(b_i))
     
     def compute_continuity_residual(self) -> float:
-        """Face-flux continuity residual: (re*ue - rw*uw)/rP (axisymmetric)."""
         W, E = self.inner, self.outer
         if W is None or E is None:
+            # No proper control volume (boundary node) → no continuity residual
             return 0.0
-        eps = 1e-12
-        rW, rP, rE = float(W._r), float(self._r), float(E._r)
+
+        eps = 1e-14
+        rW = float(W._r)
+        rP = float(self._r)
+        rE = float(E._r)
+
+        # Face radii
         rw = 0.5 * (rW + rP)
         re = 0.5 * (rP + rE)
 
+        # Control-volume width for node-centered scheme
+        dr_i = re - rw
+        if dr_i <= eps or rP <= eps:
+            return 0.0
+
+        # Cell-center velocities (current iterate)
         uW = 0.0 if W._u_r is None else float(W._u_r)
         uP = 0.0 if self._u_r is None else float(self._u_r)
         uE = 0.0 if E._u_r is None else float(E._u_r)
 
-        u_w = 0.5 * (uW + uP)   # u_{r,i-1/2}
-        u_e = 0.5 * (uP + uE)   # u_{r,i+1/2}
+        # Face velocities (second order)
+        u_w = 0.5 * (uW + uP)   # u_{r, i-1/2}
+        u_e = 0.5 * (uP + uE)   # u_{r, i+1/2}
 
-        return abs((re * u_e - rw * u_w) / max(rP, eps))
+        # Signed discrete continuity defect at node i
+        return (re * u_e - rw * u_w) / (rP * dr_i)
     
     
     # --- local residuals (diagnostics) ---
     def update_local_residuals(self) -> None:
-        # u_r residual
-        if self.inner and self.outer and self._u_r is not None:
-            phiW = self.inner._u_r
-            phiE = self.outer._u_r
+        # ---- u_r residual ----
+        if self.inner is not None and self.outer is not None and self._u_r is not None:
             cr = self.coeffs_r
-            lhs = cr.aP * self._u_r
-            rhs = (cr.aW * (0.0 if phiW is None else phiW)
-            + cr.aE * (0.0 if phiE is None else phiE) + cr.b)
+            phiW = 0.0 if self.inner._u_r is None else float(self.inner._u_r)
+            phiE = 0.0 if self.outer._u_r is None else float(self.outer._u_r)
+
+            lhs = cr.aP * float(self._u_r)
+            rhs = cr.aW * phiW + cr.aE * phiE + cr.b
 
             self.res_r.R = lhs - rhs
         else:
             self.res_r.R = 0.0
 
-        # u_theta residual
-        if self.inner and self.outer and self._u_theta is not None:
-            phiW = self.inner._u_theta
-            phiE = self.outer._u_theta
+        # ---- u_theta residual ----
+        if self.inner is not None and self.outer is not None and self._u_theta is not None:
             ct = self.coeffs_t
-            lhs = ct.aP * self._u_theta
-            rhs = (ct.aW * (0.0 if phiW is None else phiW)
-            + ct.aE * (0.0 if phiE is None else phiE) + ct.b)
+            phiW = 0.0 if self.inner._u_theta is None else float(self.inner._u_theta)
+            phiE = 0.0 if self.outer._u_theta is None else float(self.outer._u_theta)
+
+            lhs = ct.aP * float(self._u_theta)
+            rhs = ct.aW * phiW + ct.aE * phiE + ct.b
 
             self.res_t.R = lhs - rhs
         else:
             self.res_t.R = 0.0
 
-        # p residual
-        if self.inner and self.outer and self._p is not None:
-           self.res_p.R = self.compute_continuity_residual()
+        # ---- "p" residual = continuity residual (mass conservation) ----
+        if self.inner is not None and self.outer is not None and self._p is not None:
+            cp = self.coeffs_p
+            pW = 0.0 if self.inner._p is None else float(self.inner._p)
+            pE = 0.0 if self.outer._p is None else float(self.outer._p)
 
+            lhs = cp.aP * float(self._p)
+            rhs = cp.aW * pW + cp.aE * pE + cp.b
+
+            self.res_p.R = lhs - rhs
         else:
             self.res_p.R = 0.0
 

@@ -98,7 +98,7 @@ def main(argv: List[str]) -> int:
                 r_main  = 0.10,
                 r_outer = 0.125,
                 n_inner = 1,
-                n_main  = 3,
+                n_main  = 5,
                 n_outer = 1,
                 rho     = 1000.0,
                 nu      = 1.0e-6,
@@ -109,8 +109,8 @@ def main(argv: List[str]) -> int:
                 omega_t = 1.0,
                 omega_p = 1.3,
                 tol     = 1e-8,
-                max_iter= 10_000,
-                pseudo_dt= 1e-2)
+                max_iter= 200_000,
+                pseudo_dt= 1e-3)
                 
 
     try:
@@ -133,7 +133,12 @@ def main(argv: List[str]) -> int:
     # Pretty print results
     iters = result.get("iterations", None)
     final = result.get("final_norm", None)
-    print(f"\nConverged in {iters} iterations with max-norm Δ = {final:.3e}")
+
+    if iters is not None and iters < case.max_iter:
+        print(f"\nConverged in {iters} iterations with max-norm Δ = {final:.3e}")
+    else:
+        print(f"\nDid NOT reach tolerance. Ran {iters} iterations with max-norm Δ = {final:.3e}")
+  
     # Optional: print last few history entries
     hist = result.get("history", [])
     tail = hist[-5:] if len(hist) > 5 else hist

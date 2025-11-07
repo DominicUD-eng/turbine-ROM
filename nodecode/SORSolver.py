@@ -2,6 +2,7 @@ import numpy as np
 from typing import Dict, Any, List
 from node import EqCoeffs
 from node import collect_residual_norms
+from node import reset_residual_history
 
 class SORSolver:
     """
@@ -43,6 +44,7 @@ class SORSolver:
         inner_bc:    {'p': value}
         Returns: {'iterations': N, 'final_norm': val, 'history': [...]}
         """
+        reset_residual_history()
         self._prepare_mesh_links()
         self._apply_initial_guess(init_fields)
         self._mark_boundaries_and_values(outer_bc, inner_bc)
@@ -96,6 +98,8 @@ class SORSolver:
                 max_delta = max(max_delta, du_r, du_t, dp)
 
             self.history.append({'iter': it, 'max_norm': max_delta})
+            if it == 1 or it % 500 == 0:
+                print(f"[ITER] {it:6d}  max_delta = {max_delta:.3e}")
 
             if max_delta <= self.tol:
                 self._export_results(iterations=it, final_norm=max_delta, prefix="sor")
