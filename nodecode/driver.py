@@ -63,6 +63,68 @@ class SorCase:
             r_outer=self.r_outer
         )
 
+    def initial_fields(self,
+                   rho: float = 1.0,
+                   H: float = 1.0,
+                   p_out: float = 0.0,
+                   mdot: float | None = None,
+                   ur_in: float | None = None,
+                   utheta_out: float | None = None,
+                   Omega: float | None = None) -> None:
+        
+        rs = np.asarray([nd.r for nd in self.mesh.nodes], dtype=np.float64)
+        if rs.ndim != 1 or rs.size < 2:
+            raise ValueError("initial_fields: mesh radii are invalid")
+        if not np.all(np.diff(rs) > 0):
+            # last-resort fix (mesh build should have sorted/deduped already)
+            order = np.argsort(rs)
+            rs = rs[order]
+
+        r_in, r_out = float(rs[0]), float(rs[-1])
+        if r_in <= 0.0:
+            raise ValueError("initial_fields: inner radius must be > 0")
+
+        # --- u_r: continuity-consistent (∝ 1/r) ---
+        rs_safe = np.maximum(rs, 1e-15)  # guard
+        if mdot is not None:
+            ur = mdot / (rho * 2.0 * np.pi * H * rs_safe)   # vectorized
+        elif ur_in is not None:
+            ur = ur_in * (r_in / rs_safe)
+        else:
+            ur = np.zeros_like(rs_safe)
+
+        # --- u_theta ---
+        if utheta_out is None:
+            utheta_out = 0.2 * abs(ur[-1]) * r_out
+        K  = utheta_out * r_out
+        ut = K / rs_safe
+        # Closed-form pressure: p(r) = p_out + 0.5*rho*K^2*(r_out^{-2} - r^{-2})
+        inv_r2 = 1.0 / (rs_safe * rs_safe)
+        p = p_out + 0.5 * rho * (K * K) * ((1.0 / (r_out * r_out)) - inv_r2)
+
+        # --- sanitize numbers for very fine meshes or extreme params ---
+        # Replace non-finite with nearest finite fallback (rare, but safe)
+        def _clean(a):
+            bad = ~np.isfinite(a)
+            if bad.any():
+                a = a.copy()
+                a[bad] = 0.0
+            return a
+
+        ur = _clean(ur.astype(np.float64))
+        ut = _clean(ut.astype(np.float64))
+        p  = _clean(p.astype(np.float64))
+
+        # (optional) write back to nodes
+        for nd, u_r, u_t, pp in zip(self.mesh.nodes, ur, ut, p):
+            nd.ur = float(u_r)
+            nd.ut = float(u_t)
+            nd.p  = float(pp)
+
+        # return dict for solver
+        return {"u_r": ur.tolist(), "u_theta": ut.tolist(), "p": p.tolist()}
+
+    '''
     def _initial_fields(self) -> Dict[str, List[float]]:
         """Provide an initial guess in inner→outer order."""
         assert self.mesh is not None
@@ -72,6 +134,7 @@ class SorCase:
         u_t0 = self.u_t_out * (rs - rs.min()) / (rs.max() - rs.min() + 1e-30)
         p0 = np.full(N, self.p0, dtype=float)
         return {"u_r": u_r0.tolist(), "u_theta": u_t0.tolist(), "p": p0.tolist()}
+    '''
 
     def _bcs(self) -> Tuple[Dict[str, float], Dict[str, float]]:
         outer_bc = {"u_r": self.u_r_out, "u_theta": self.u_t_out}
@@ -81,13 +144,27 @@ class SorCase:
     def run(self, init_fields = None):
         if self.mesh is None:
             self.build_mesh()
+
         solver = SORSolver(mesh=self.mesh,
                         rho=self.rho, nu=self.nu,
                         omega_r=self.omega_r, omega_t=self.omega_t, omega_p=self.omega_p,
                         tol=self.tol, max_iter=self.max_iter,
                         pseudo_dt=getattr(self, "pseudo_dt", None))
-        # use override if provided
-        init_fields = init_fields if init_fields is not None else self._initial_fields()
+
+        # --- Use balanced initial conditions unless caller provided one ---
+        if init_fields is None:
+            # continuity-consistent guess: u_r(r) ~ C/r with C = u_r_out * r_out
+            rs = np.array([nd.r for nd in self.mesh.nodes], dtype=float)
+            r_in, r_out = rs[0], rs[-1]
+            ur_in = self.u_r_out * (r_out / r_in)   # so u_r(r) = ur_in * (r_in/r)
+
+            init_fields = self.initial_fields(
+                rho=self.rho, H=1.0,         # H=1 for 2D
+                p_out=0.0,                   # matches your outer BC in _bcs()
+                ur_in=ur_in,                 # sets u_r(r) ∝ 1/r
+                utheta_out=self.u_t_out      # sets swirl at outer boundary
+            )
+
         outer_bc, inner_bc = self._bcs()
         return solver.solve(init_fields=init_fields, outer_bc=outer_bc, inner_bc=inner_bc)
     
@@ -95,16 +172,16 @@ class SorCase:
 def main(argv: List[str]) -> int:
     case = SorCase(
                 r_inner = 0.05,
-                r_main  = 0.10,
+                r_main  = 0.1,
                 r_outer = 0.125,
-                n_inner = 1,
+                n_inner = 3,
                 n_main  = 5,
-                n_outer = 1,
+                n_outer = 3,
                 rho     = 1000.0,
                 nu      = 1.0e-6,
-                p0      = 101325.0,
-                u_r_out = 5.0,
-                u_t_out = 2.0,
+                p0      = 0,
+                u_r_out = 1.0,
+                u_t_out = 1.0,
                 omega_r = 1.0,
                 omega_t = 1.0,
                 omega_p = 1.3,

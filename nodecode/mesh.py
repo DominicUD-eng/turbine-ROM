@@ -13,6 +13,31 @@ class Mesh:
         self.rs: np.ndarray | None = None
         self.tags: list[str] | None = None
 
+    def buildMeshEven(self, n: int, tag: str = "EVEN") -> None:
+        if n < 2:
+            raise ValueError("buildMeshEven: n must be >= 2")
+
+        r_in  = float(self.r_in)
+        r_out = float(self.r_main)
+
+        # Uniform radii including both endpoints
+        rs = np.linspace(r_in, r_out, n, dtype=float)
+
+        # Create nodes, tag them, and wire neighbors
+        nodes = [Node(radius=float(r)) for r in rs]
+        for i, nd in enumerate(nodes):
+            nd.region = tag
+            nd.inner  = nodes[i-1] if i > 0        else None
+            nd.outer  = nodes[i+1] if i < n - 1    else None
+
+        # Save to mesh
+        self.nodes = nodes
+        self.rs    = rs
+        self.tags  = [tag] * n
+
+        # Optional: quick audit print of spacings
+        self._audit_mesh_spacings()
+
     def buildMesh(
         self,
         p0: float,
@@ -124,10 +149,6 @@ class Mesh:
                 dE = nd.outer.r - nd.r
                 if dW <= 0 or dE <= 0:
                     print("[MESH] BAD SPACING at r=", nd.r)
-
-        print("[MESH DBG] min r =", min(nd.r for nd in self.nodes))
-        print("[MESH DBG] inner flag =", self.nodes[0].is_inner_bc, "outer flag =", self.nodes[-1].is_outer_bc)
-        print("[MESH DBG] any r<r_inner? ->", any(nd.r < self.r_in for nd in self.nodes))
 
         self._audit_mesh_spacings()
 

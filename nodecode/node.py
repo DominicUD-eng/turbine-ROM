@@ -4,13 +4,6 @@ from typing import Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 
-
-def _nan_debug_dump(phase, r, dW, dE, vals: dict):
-    parts = [f"[NAN-DBG] {phase} r={r:.9e} dW={dW:.9e} dE={dE:.9e}"]
-    for k, v in vals.items():
-        parts.append(f"{k}={v!r}")
-    print("  ".join(parts))
-
 #   aw*Ui-1    +   ap*ui    +   ae*Ui+1     =   b
 @dataclass
 class EqCoeffs:
@@ -253,16 +246,11 @@ class Node:
         inv_dr  = 1.0 / d_r
         inv_dr2 = inv_dr * inv_dr
 
-        # ----------------------------
-        # Implicit diffusion (same operator as u_r)
-        # ----------------------------
+   
         aW: float = -nu * (  inv_dr2 - 0.5 * rinv * inv_dr )
         aE: float = -nu * (  inv_dr2 + 0.5 * rinv * inv_dr )
         aP: float =  mass_coeff + aW + aE + nu * rinv2
 
-        # ----------------------------
-        # Explicit RHS (previous iterate values)
-        # ----------------------------
         # Velocities
         ut_im1_old: float = 0.0 if W._u_theta_prev    is None else float(W._u_theta_prev)
         ut_i_old:   float = 0.0 if self._u_theta_prev is None else float(self._u_theta_prev)

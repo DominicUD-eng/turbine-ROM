@@ -27,9 +27,6 @@ class SORSolver:
         self.max_iter = int(max_iter)
         self.history: List[Dict[str, float]] = []
         self.pseudo_dt = float(pseudo_dt) if pseudo_dt is not None else 1e-4
-        self.ps_min, self.ps_max = 1e-6, 1e-2
-        self.ps_grow, self.ps_shrink = 2.0, 0.25
-        self._improve_streak = 0
         self._last_res = None
 
 
@@ -149,7 +146,7 @@ class SORSolver:
         outer._u_r = float(outer_bc['u_r']) if 'u_r' in outer_bc else None
         outer._u_theta = float(outer_bc['u_theta']) if 'u_theta' in outer_bc else None
 
-        print(f"[DBG] BCs: inner r={inner.r:.6e} p*={inner._p!r} | outer r={outer.r:.6e} ur*={outer._u_r!r} ut*={outer._u_theta!r}")
+        print(f"[BOUNDARIES] BCs: inner r={inner.r:.6e} p*={inner._p!r} | outer r={outer.r:.6e} ur*={outer._u_r!r} ut*={outer._u_theta!r}")
         
     def _apply_bcs(self) -> None:
         for nd in self.mesh.nodes:

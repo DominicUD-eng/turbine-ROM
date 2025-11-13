@@ -1,0 +1,61 @@
+def _safe_max(vals):
+        # vals may be a generator; realize it once
+        arr = np.asarray([abs(v) for v in vals if np.isfinite(v)], dtype=float)
+        if arr.size == 0:
+            return eps
+        m = float(np.max(arr))
+        # clamp to be strictly positive for log plots
+        return m if (np.isfinite(m) and m > 0.0) else eps
+
+    ur_max = _safe_max([nd.res_r.R for nd in nodes])
+    ut_max = _safe_max([nd.res_t.R for nd in nodes])
+    p_max  = _safe_max([nd.res_p.R for nd in nodes])
+
+    _RES_HIST['iter'].append(int(it))
+    _RES_HIST['ur_max'].append(ur_max)
+    _RES_HIST['ut_max'].append(ut_max)
+    _RES_HIST['p_max'].append(p_max)
+
+def plot_residual_history(*, show: bool = True, savepath: str | None = None) -> None:
+    if not _RES_HIST['iter']:
+        print("[PLOT] No residual history collected; nothing to plot.")
+        return
+
+    its = np.asarray(_RES_HIST['iter'], dtype=float)
+    ur  = np.asarray(_RES_HIST['ur_max'], dtype=float)
+    ut  = np.asarray(_RES_HIST['ut_max'], dtype=float)
+    pp  = np.asarray(_RES_HIST['p_max'],  dtype=float)
+
+    eps = 1e-16
+
+    def scrub(arr):
+        # Replace non-finite with eps, and clamp non-positives to eps
+        out = np.nan_to_num(arr, nan=eps, posinf=np.finfo(float).max/1e6, neginf=eps)
+        out[out <= 0.0] = eps
+        return out
+
+    ur, ut, pp = scrub(ur), scrub(ut), scrub(pp)
+
+    # Choose safe y-limits
+    y_all = np.concatenate([ur, ut, pp])
+    y_min = float(np.min(y_all[np.isfinite(y_all)])) if np.any(np.isfinite(y_all)) else eps
+    y_max = float(np.max(y_all[np.isfinite(y_all)])) if np.any(np.isfinite(y_all)) else 1.0
+    y_min = max(y_min, eps)
+    y_max = max(y_max, y_min * 1.1)  # ensure some dynamic range
+
+    fig, ax = plt.subplots()
+    ax.set_yscale('log', nonpositive='clip')
+    ax.plot(its, ur, label=r"$u_r$ residual (max)")
+    ax.plot(its, ut, label=r"$u_\theta$ residual (max)")
+    ax.plot(its, pp, label=r"$p$ residual (max)")
+    ax.set_ylim(y_min/10.0, y_max*10.0)  # force safe bounds
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Max |residual|")
+    ax.grid(True, which="both", linestyle=":")
+    ax.legend()
+    fig.tight_layout()
+    if savepath:
+        fig.savefig(savepath, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
