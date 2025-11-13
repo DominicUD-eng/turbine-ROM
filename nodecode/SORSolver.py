@@ -51,19 +51,18 @@ class SORSolver:
         assert n_inner == 1, f"Expected 1 inner-BC node, found {n_inner}"
         assert n_outer == 1, f"Expected 1 outer-BC node, found {n_outer}"
 
+        mass_coeff = 0.0 if (self.pseudo_dt is None or self.pseudo_dt <= 0.0) else (self.rho / self.pseudo_dt)
+        for nd in self.mesh.nodes:
+            nd.assemble_coeffs_u_r(self.rho, self.nu, mass_coeff=mass_coeff)
+            nd.assemble_coeffs_u_theta(self.rho, self.nu, mass_coeff=mass_coeff)
+            nd.assemble_coeffs_p(self.rho,self.nu)
+
         # Main SOR loop
         input("\n[PAUSE] Press <Enter> to begin SOR iterations...")
         for it in range(1, self.max_iter + 1):
             # Snapshots for Δ
             for nd in self.mesh.nodes:
                 nd.snapshot_prev()
-
-            # Assemble coefficients at current iterate
-            mass_coeff = 0.0 if (self.pseudo_dt is None or self.pseudo_dt <= 0.0) else (self.rho / self.pseudo_dt)
-            for nd in self.mesh.nodes:
-                nd.assemble_coeffs_u_r(self.rho, self.nu, mass_coeff=mass_coeff)
-                nd.assemble_coeffs_u_theta(self.rho, self.nu, mass_coeff=mass_coeff)
-                nd.assemble_coeffs_p(self.rho,self.nu)
 
             # Enforce BCs before sweep
             self._apply_bcs()
